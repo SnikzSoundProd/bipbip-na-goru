@@ -1,0 +1,10 @@
+build/
+out/
+tools/
+thirdparty/JoltPhysics/
+thirdparty/gns-build/
+thirdparty/GameNetworkingSockets*/
+*.exe
+*.obj
+*.a
+*.zip
