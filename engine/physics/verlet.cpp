@@ -42,10 +42,11 @@ void VerletWorld::setParticlePinned(int i, bool pinned) {
 }
 
 void VerletWorld::addParticleForce(int i, const Vec3& f) {
-    // verlet: impulse ~ position nudge; caller scales appropriately
     Particle& p = particles_[i];
     if (p.invMass > 0.f) p.pos = p.pos + f;
 }
+
+// --- particles ---------------------------------------------------------------
 
 void VerletWorld::integrate(float dt) {
     for (auto& p : particles_) {
@@ -82,7 +83,6 @@ void VerletWorld::collideHeightField() {
         float h = hf_->heightAt(p.pos.x, p.pos.z);
         float floorY = h + p.radius;
         if (p.pos.y < floorY) {
-            // push out along Y and kill inward velocity (simple friction via prev lerp)
             p.pos.y = floorY + kSkin;
             Vec3 vel = p.pos - p.prev;
             vel.y *= -0.15f;                       // restitution
@@ -93,24 +93,23 @@ void VerletWorld::collideHeightField() {
 }
 
 // --- rigid body boxes: full 3D rotation -------------------------------------
-static void boxAxes(const Quat& q, Vec3& ax, Vec3& ay, Vec3& az) {
-    // unit box axes = rotated basis vectors
-    ax = rotate(q, Vec3{1,0,0});
-    ay = rotate(q, Vec3{0,1,0});
-    az = rotate(q, Vec3{0,0,1});
+static void boxAxes(const Quat& q, Vec3* ax) {
+    ax[0] = rotate(q, Vec3{1,0,0});
+    ax[1] = rotate(q, Vec3{0,1,0});
+    ax[2] = rotate(q, Vec3{0,0,1});
 }
 
-// sphere vs fully-oriented box
+// sphere vs fully-oriented box; outPush points from box surface to sphere center
 static bool sphereOBB(const Vec3& sc, float r,
-                      const Vec3& bc, const Vec3 ax[3],
-                      const float he[3], Vec3& outPush) {
+                      const Vec3& bc, const Vec3* ax,
+                      const float* he, Vec3& outPush) {
     Vec3 d = sc - bc;
     float l[3] = { dot(d, ax[0]), dot(d, ax[1]), dot(d, ax[2]) };
     float c[3];
     for (int i = 0; i < 3; ++i) c[i] = std::max(-he[i], std::min(he[i], l[i]));
     Vec3 closest = bc;
     for (int i = 0; i < 3; ++i)
-        closest = closest + ax[i] * (c[i] - l[i]);   // move from sphere-proj to clamp
+        closest = closest + ax[i] * (c[i] - l[i]);
     Vec3 n = sc - closest;
     float dist2 = dot(n, n);
     if (dist2 > r*r) return false;
@@ -124,48 +123,81 @@ static Vec3 pointVel(const BoxProp& b, const Vec3& r) {
     return b.vel + cross(b.angVel, r);
 }
 
-// apply impulse j along n at world offset r (updates linear + angular)
-static void applyImpulse(BoxProp& b, const Vec3& n, float j, const Vec3& r) {
-    b.vel = b.vel + n * j;                 // mass folded into j by caller
-    Vec3 torque = cross(r, n * j);
-    // local-frame angular response with diagonal inertia
-    float m = b.hx * b.hy * b.hz;
-    Vec3 Ilocal{
-        m / 3.f * (b.hy*b.hy + b.hz*b.hz),
-        m / 3.f * (b.hx*b.hx + b.hz*b.hz),
-        m / 3.f * (b.hx*b.hx + b.hy*b.hy)
-    };
-    Vec3 tl = rotate(b.rot.conj(), torque);
-    Vec3 dw{ tl.x / Ilocal.x, tl.y / Ilocal.y, tl.z / Ilocal.z };
-    b.angVel = b.angVel + rotate(b.rot, dw);
+// diagonal inertia in WORLD frame (box axes are principal axes)
+static void worldInertia(const BoxProp& b, const Vec3* ax, float m, Vec3& Iout) {
+    float ix = m/12.f * ((2*b.hy)*(2*b.hy) + (2*b.hz)*(2*b.hz));
+    float iy = m/12.f * ((2*b.hx)*(2*b.hx) + (2*b.hz)*(2*b.hz));
+    float iz = m/12.f * ((2*b.hx)*(2*b.hx) + (2*b.hy)*(2*b.hy));
+    // transform diag inertia to world: I_world ≈ sum I_i * axis_i ⊗ axis_i (diagonal only)
+    // For impulse response we need I⁻¹·τ; with diag-in-world approximation:
+    Vec3 il{ix, iy, iz};
+    Vec3 t = rotate(b.rot.conj(), Iout); // placeholder, replaced below
+    (void)t; (void)il;
 }
+
+// apply impulse j (scalar along n, mass already folded by caller as dv) at offset r.
+// Here jv is the desired DELTA VELOCITY contribution: we compute angular response
+// from real inertia tensor so units stay consistent.
+static void applyImpulseVel(BoxProp& b, const Vec3* ax, const float he[],
+                            const Vec3& r, const Vec3& imp /* J vector */) {
+    float m = b.hx * b.hy * b.hz * 8.f;      // density=1 volume mass
+    b.vel = b.vel + imp * (1.f / m);
+
+    Vec3 torque = cross(r, imp);
+    // I_inv in world: R * Iinv_local * R^T ; Iinv_local diag
+    float hx2 = (2*b.hx)*(2*b.hx), hy2 = (2*b.hy)*(2*b.hy), hz2 = (2*b.hz)*(2*b.hz);
+    float ixl = 12.f / (m * (hy2 + hz2));
+    float iyl = 12.f / (m * (hx2 + hz2));
+    float izl = 12.f / (m * (hx2 + hy2));
+    // tau_local = R^T * torque ; dw_local = Iinv_local .* tau_local ; dw_world = R * dw_local
+    Vec3 tl = rotate(b.rot.conj(), torque);
+    Vec3 dwl{ tl.x * ixl, tl.y * iyl, tl.z * izl };
+    b.angVel = b.angVel + rotate(b.rot, dwl);
+}
+
+// effective inverse mass of box along normal n at contact offset r
+static float effInvMass(const BoxProp& b, const Vec3* ax, const Vec3& r, const Vec3& n) {
+    float m = b.hx * b.hy * b.hz * 8.f;
+    float hx2 = (2*b.hx)*(2*b.hx), hy2 = (2*b.hy)*(2*b.hy), hz2 = (2*b.hz)*(2*b.hz);
+    float ixl = 12.f / (m * (hy2 + hz2));
+    float iyl = 12.f / (m * (hx2 + hz2));
+    float izl = 12.f / (m * (hx2 + hy2));
+    Vec3 rxn = cross(r, n);
+    Vec3 tl = rotate(b.rot.conj(), rxn);
+    Vec3 dwl{ tl.x * ixl, tl.y * iyl, tl.z * izl };
+    Vec3 dw = rotate(b.rot, dwl);
+    return 1.f/m + dot(cross(dw, r), n);   // 1/m + n·((I⁻¹(r×n))×r)
+}
+
+void VerletWorld::wake(BoxProp& b) { b.sleeping = false; b.sleepTimer = 0.f; }
 
 void VerletWorld::collideBoxesParticles() {
     for (auto& b : boxes_) {
-        Vec3 ax[3]; boxAxes(b.rot, ax[0], ax[1], ax[2]);
+        Vec3 ax[3]; boxAxes(b.rot, ax);
         float he[3] = { b.hx, b.hy, b.hz };
         for (auto& p : particles_) {
             if (p.invMass <= 0.f) continue;
             Vec3 push;
             if (!sphereOBB(p.pos, p.radius, b.pos, ax, he, push)) continue;
 
-            Vec3 cp = p.pos - push;                    // approx contact point
+            Vec3 cp = p.pos - push;
             Vec3 r = cp - b.pos;
-            Vec3 n = normalize(push);                  // away from box
-            Vec3 bv = pointVel(b, r);
+            Vec3 n = normalize(push);
+            wake(b);
+
             Vec3 pv = (p.pos - p.prev);
-            Vec3 relv = bv - pv;                       // box sees particle approaching
+            Vec3 relv = pointVel(b, r) - pv;   // relative velocity box-vs-particle
             float vn = dot(relv, n);
 
             p.pos = p.pos + push;
             p.prev = p.prev + push * 0.4f;
 
-            if (vn < 0.f) {
-                // impulse pushes box away from particle (mass-scaled)
-                float pm = p.invMass > 0.f ? 1.f / p.invMass : 1000.f;
-                float bm = b.hx * b.hy * b.hz * 8.f;
-                float j = -vn * (pm * bm) / (pm + bm) * 1.4f;
-                applyImpulse(b, -n, j / bm, r);
+            if (vn > 0.f && !b.sleeping) {
+                // particle is lighter side; push box away along -n proportionally
+                float bmEff = 1.f / effInvMass(b, ax, r, -n);
+                float pm = 1.f / p.invMass;
+                float j = vn * (pm * bmEff) / (pm + bmEff);
+                applyImpulseVel(b, ax, he, r, -n * j);
             }
         }
     }
@@ -174,7 +206,7 @@ void VerletWorld::collideBoxesParticles() {
 Vec3 VerletWorld::collideSphereWithBox(const Vec3& posIn, float radius, int boxIdx,
                                        Vec3* velInOut) {
     BoxProp& b = boxes_[boxIdx];
-    Vec3 ax[3]; boxAxes(b.rot, ax[0], ax[1], ax[2]);
+    Vec3 ax[3]; boxAxes(b.rot, ax);
     float he[3] = { b.hx, b.hy, b.hz };
     Vec3 push;
     if (!sphereOBB(posIn, radius, b.pos, ax, he, push))
@@ -182,33 +214,38 @@ Vec3 VerletWorld::collideSphereWithBox(const Vec3& posIn, float radius, int boxI
 
     Vec3 cp = posIn - push;
     Vec3 r = cp - b.pos;
-    Vec3 n = normalize(push);
-    Vec3 bv = pointVel(b, r);
-    Vec3& v = *velInOut;
-    float vn = dot(v - bv, n);
+    Vec3 n = normalize(push);           // away from box, toward player
+    wake(b);
 
-    // positional separation for the kinematic sphere
-    float vnBox = dot(b.vel, n);
-    if (vn < vnBox) {
-        // relative approach speed -> shove box with player momentum share
-        float bm = b.hx * b.hy * b.hz * 8.f;
-        float pm = 60.f;                                // player feels heavy
-        float jrel = (vnBox - vn) * (pm * bm) / (pm + bm);
-        applyImpulse(b, n, jrel / bm, r);
+    Vec3& v = *velInOut;
+    Vec3 bv = pointVel(b, r);
+    float vrel = dot(v - bv, n);        // negative when approaching
+
+    if (vrel < 0.f) {
+        // player momentum shoves the box (player mass ~70kg, boxes ~1-4)
+        float bmEff = 1.f / effInvMass(b, ax, r, n);
+        float pm = 70.f;
+        float j = -vrel * (pm * bmEff) / (pm + bmEff);   // full elastic share
+        applyImpulseVel(b, ax, he, r, n * j);
+        // player loses that velocity component (inelastic-ish contact)
+        float lose = -vrel * (bmEff / (pm + bmEff)) * 1.6f;
+        v = v - n * (-vrel) * std::min(1.f, lose / std::max(0.001f, -vrel));
+        // simpler & stable: hard-stop player along n
+        float into = dot(v, n);
+        if (into < dot(pointVel(b, r), n))
+            v = v - n * (into - dot(pointVel(b, r), n));
     }
-    // kill player velocity component INTO the box
-    float into = dot(v, n) - vnBox;
-    if (into < 0.f) v = v - n * into;
+
+    // positional: never allow overlap — sphere rides on the surface
     return push;
 }
 
 void VerletWorld::collideBoxesBoxes() {
-    // broad-phase spheres; narrow resolution via separating-axis-ish push.
-    // Full OBB-OBB SAT is Phase 5 polish; sphere approx reads fine in motion.
     for (size_t i = 0; i < boxes_.size(); ++i) {
         for (size_t j = i + 1; j < boxes_.size(); ++j) {
             BoxProp& A = boxes_[i];
             BoxProp& B = boxes_[j];
+            if (A.sleeping && B.sleeping) continue;
             float ra = (A.hx + A.hy + A.hz) * 0.62f;
             float rb = (B.hx + B.hy + B.hz) * 0.62f;
             Vec3 d = B.pos - A.pos;
@@ -218,20 +255,23 @@ void VerletWorld::collideBoxesBoxes() {
             float dist = sqrtf(dist2);
             Vec3 n = d * (1.f / dist);
             float overlap = rsum - dist;
-            float ma = A.hx * A.hy * A.hz, mb = B.hx * B.hy * B.hz;
+            float ma = A.hx*A.hy*A.hz * 8.f, mb = B.hx*B.hy*B.hz * 8.f;
             float wa = mb / (ma + mb), wb = ma / (ma + mb);
             A.pos = A.pos - n * (overlap * wa);
             B.pos = B.pos + n * (overlap * wb);
-            // contact-point impulse both ways
-            Vec3 cp = A.pos + n * (ra * 1.f);
+            wake(A); wake(B);
+            Vec3 cp = A.pos + n * ra;
             Vec3 ra_ = cp - A.pos, rb_ = cp - B.pos;
+            Vec3 axA[3], axB[3];
+            boxAxes(A.rot, axA); boxAxes(B.rot, axB);
             Vec3 relv = pointVel(B, rb_) - pointVel(A, ra_);
             float vn = dot(relv, n);
             if (vn < 0.f) {
-                float total = ma + mb;
-                float jA = -vn * (mb / total), jB = -vn * (ma / total);
-                applyImpulse(A, -n, jA / ma, ra_);
-                applyImpulse(B,  n, jB / mb, rb_);
+                float eA = effInvMass(A, axA, ra_, n);
+                float eB = effInvMass(B, axB, rb_, n);
+                float j = -vn / (eA + eB);
+                applyImpulseVel(A, axA, nullptr, ra_, -n * (j * eA * ma));
+                applyImpulseVel(B, axB, nullptr, rb_,  n * (j * eB * mb));
             }
         }
     }
@@ -239,35 +279,31 @@ void VerletWorld::collideBoxesBoxes() {
 
 void VerletWorld::integrateBoxes(float dt) {
     for (auto& b : boxes_) {
+        if (b.sleeping) continue;
         b.vel = b.vel + gravity_ * dt;
-        b.vel = b.vel * 0.999f;
         b.pos = b.pos + b.vel * dt;
-        // quaternion integration: dq = 0.5 * omega*q * dt
         Vec3 w = b.angVel * 0.5f;
         Quat dw{ w.x, w.y, w.z, 0.f };
         Quat dq = dw * b.rot;
         b.rot = Quat{ b.rot.x + dq.x*dt, b.rot.y + dq.y*dt,
                       b.rot.z + dq.z*dt, b.rot.w + dq.w*dt }.normalized();
-        b.angVel = b.angVel * 0.996f;   // slight rotational damping
     }
 }
 
 void VerletWorld::collideBoxesTerrain() {
     if (!hf_) return;
     for (auto& b : boxes_) {
-        Vec3 ax[3]; boxAxes(b.rot, ax[0], ax[1], ax[2]);
+        Vec3 ax[3]; boxAxes(b.rot, ax);
         float he[3] = { b.hx, b.hy, b.hz };
 
-        // terrain normal at box position (finite differences)
+        // terrain normal under box center
         float e = 0.35f;
-        float hC = hf_->heightAt(b.pos.x, b.pos.z);
         float hx1 = hf_->heightAt(b.pos.x + e, b.pos.z);
         float hx0 = hf_->heightAt(b.pos.x - e, b.pos.z);
         float hz1 = hf_->heightAt(b.pos.x, b.pos.z + e);
         float hz0 = hf_->heightAt(b.pos.x, b.pos.z - e);
         Vec3 tn = normalize(Vec3{ -(hx1-hx0)/(2*e), 1.f, -(hz1-hz0)/(2*e) });
 
-        // check all 8 corners as contact candidates
         float maxPen = 0.f;
         int contacts = 0;
         for (int cx = -1; cx <= 1; cx += 2)
@@ -281,41 +317,48 @@ void VerletWorld::collideBoxesTerrain() {
             ++contacts;
             maxPen = std::max(maxPen, pen);
 
-            // contact velocity at this corner
             Vec3 v = pointVel(b, rc);
             float vn = dot(v, tn);
             if (vn < 0.f) {
-                // impulse with restitution + friction
-                float e_rest = (vn < -2.f) ? 0.28f : 0.05f;  // bounce only on hard hits
-                Vec3 tdir = v - tn * vn;                     // tangential part
-                float tl = length(tdir);
+                float e_rest = (vn < -2.5f) ? 0.30f : 0.f;   // bounce only on real hits
 
-                // effective mass along normal (approx: corner lever arm)
-                float arm = length(rc);
-                float m = b.hx * b.hy * b.hz * 8.f;
-                float k = 1.f/m + arm*arm * 0.7f;            // rotational coupling fudge
-                float jn = -(1.f + e_rest) * vn / k;
+                float em = effInvMass(b, ax, rc, tn);
+                float jn = -(1.f + e_rest) * vn / em;
+                applyImpulseVel(b, ax, he, rc, tn * jn);
 
-                applyImpulse(b, tn, jn / m, rc);
-                // Coulomb friction clamp
+                // Coulomb friction against tangential motion
+                Vec3 vt = v - tn * dot(v, tn);
+                float tl = length(vt);
                 if (tl > 1e-4f) {
-                    float jt = -tl / k;
-                    float maxF = 0.55f * jn;
-                    if (-jt > maxF) jt = -maxF;
-                    applyImpulse(b, normalize(tdir), jt / m, rc);
+                    float et = effInvMass(b, ax, rc, normalize(-vt));
+                    float jt = tl / et;
+                    float maxF = 0.6f * jn;
+                    if (jt > maxF) jt = maxF;
+                    applyImpulseVel(b, ax, he, rc, normalize(-vt) * jt);
                 }
-            } else if (pen > 0.f) {
-                // resting contact: gentle anti-grav kick so it settles, not sinks
-                applyImpulse(b, tn, 9.81f * 0.016f, rc);
             }
         }
 
         if (contacts > 0) {
-            // positional correction: lift by deepest penetration
-            b.pos.y += maxPen * 0.85f;
+            b.pos.y += maxPen * 0.9f;                 // positional lift
+            // sleep bookkeeping: calm body stays calm
+            if (length(b.vel) < 0.25f && length(b.angVel) < 0.35f) {
+                b.sleepTimer += 1.f/60.f;
+                if (b.sleepTimer > 0.5f) {
+                    b.sleeping = true;
+                    b.vel = Vec3{}; b.angVel = Vec3{};
+                }
+            } else {
+                b.sleepTimer = 0.f;
+            }
+        } else {
+            b.sleepTimer = 0.f;
         }
     }
 }
+
+// player/nudge interactions must wake a sleeping box
+// (wake() is called from collideSphereWithBox / collideBoxesParticles / Boxes)
 
 void VerletWorld::step(float dt) {
     integrate(dt);

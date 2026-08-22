@@ -31,6 +31,8 @@ struct BoxProp {
     Quat rot;            // orientation
     Vec3 angVel;         // world-space angular velocity
     float hx, hy, hz;    // half extents
+    bool sleeping = false;
+    float sleepTimer = 0.f;
 };
 
 class VerletWorld {
@@ -49,6 +51,8 @@ public:
     // momentum to the box. Returns applied push; updates *velInOut.
     Vec3 collideSphereWithBox(const Vec3& posIn, float radius, int boxIdx,
                               Vec3* velInOut);
+
+    void wake(BoxProp& b);
 
     // particle <-> rigid coupling helpers for the ragdoll later:
     void setParticlePinned(int i, bool pinned);
