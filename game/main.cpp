@@ -9,6 +9,9 @@
 #include "world/heightfield.h"
 #include "physics/verlet.h"
 #include "game/player/climber.h"
+#include "game/world/route.h"
+#include "game/gameplay/run.h"
+#include "render/text_renderer.h"
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -78,6 +81,26 @@ int main(int argc, char** argv) {
     player.init(&phys, &hf, Vec3{0, 0, -80});
     Climber::PartBox parts[32];
 
+    // --- gameplay: route + run state
+    Route route;
+    route.generate(hf, seed);
+    RunState run;
+    run.reset(Vec3{0, hf.heightAt(0.f, 118.f) , 118.f});
+    Gameplay gp;
+    gp.init(&hf);
+
+    // hold meshes: small orange cube for holds, big one for checkpoints
+    Mesh holdMesh;
+    {
+        auto hv = geom::boxColored(1.f,1.f,1.f, 0.95f, 0.55f, 0.15f);
+        auto hi = geom::boxIndices();
+        if (!holdMesh.init(gfx.device(), hv.data(), (uint32_t)hv.size(),
+                           hi.data(), (uint32_t)hi.size())) return 9;
+    }
+
+    TextRenderer hud;
+    if (!hud.init(gfx.device(), 1280, 720)) return 10;
+
     // constant buffers
     struct CBPerFrame { float viewProj[16]; };
     struct CBPerObject { float world[16]; };
@@ -124,18 +147,55 @@ int main(int argc, char** argv) {
             if (input.down('D')) move = move + r;
             bool wantJump = input.down(VK_SPACE);
 
-            // grab targets: points in front of pelvis at chest height
+            // grab targets: nearest route hold in front, else chest-height probe
             Vec3 pelvis = player.pelvisPos();
             Vec3 lookF{ sinf(chaseCam.yaw), 0.f, cosf(chaseCam.yaw) };
             Vec3 grabPtL = pelvis + lookF * 0.9f + Vec3{-0.35f, 0.35f, 0};
             Vec3 grabPtR = pelvis + lookF * 0.9f + Vec3{ 0.35f, 0.35f, 0};
-            bool grabL = input.mouseButtons[0];
-            bool grabR = input.mouseButtons[1];
+            bool grabL = input.mouseButtons[0] && !run.exhausted;
+            bool grabR = input.mouseButtons[1] && !run.exhausted;
+            if (grabL || grabR) {
+                int h = route.nearest(pelvis + Vec3{0, 0.4f, 0}, 2.2f);
+                if (h >= 0) {
+                    const Hold& hold = route.holds()[h];
+                    Vec3 d = hold.pos - pelvis;
+                    if (fabsf(d.x) > 0.05f) {
+                        if (grabL) grabPtL = hold.pos;
+                        if (grabR) grabPtR = hold.pos;
+                    }
+                }
+            }
 
             player.control(move, wantJump, grabL, grabR, grabPtL, grabPtR);
 
             phys.step((float)kFixedDt);
             player.simulate((float)kFixedDt);
+
+            // gameplay tick
+            Vec3 p2 = player.pelvisPos();
+            bool hanging = grabL || grabR;
+            gp.tick(run, p2, hanging, hanging, kFixedDt);
+
+            // checkpoint pickup: nearest checkpoint hold within 1.5m
+            int ch = route.nearest(p2, 1.6f);
+            if (ch >= 0 && route.holds()[ch].checkpoint && ch != run.lastCheckpoint) {
+                run.lastCheckpoint = ch;
+                run.respawn = route.holds()[ch].pos + Vec3{0, 1.f, 0};
+            }
+
+            // fall detection: way below terrain near route => fell off a cliff
+            float gy = hf.heightAt(p2.x, p2.z);
+            static Vec3 lastSafe = run.respawn;
+            static float lastSafeY = run.respawn.y;
+            if (player.grounded() && p2.y > gy - 0.5f) { lastSafe = p2; lastSafeY = p2.y; }
+            if (p2.y < lastSafeY - 14.f) {           // fell 14m below last safe spot
+                Vec3 rp;
+                gp.onFall(run, &rp);
+                player.respawn(rp);
+                lastSafe = rp; lastSafeY = rp.y;
+                phys.boxes_.clear();                 // (props stay put; particles reset below)
+            }
+
             acc -= kFixedDt; simTime += kFixedDt; ++steps;
         }
 
@@ -203,6 +263,58 @@ int main(int argc, char** argv) {
             ctx->UpdateSubresource(cbTint, 0, nullptr, col, 0, 0);
             unitMesh.draw(ctx);
         }
+        // route holds: orange cubes (bigger for checkpoints)
+        for (size_t i = 0; i < route.holds().size(); ++i) {
+            const Hold& h = route.holds()[i];
+            float s = h.checkpoint ? 0.5f : 0.22f;
+            bool active = h.checkpoint && (int)i == run.lastCheckpoint;
+            float tint[4] = { active ? 0.2f : 0.95f,
+                              active ? 0.9f : (h.checkpoint ? 0.75f : 0.55f),
+                              active ? 0.3f : (h.checkpoint ? 0.10f : 0.15f), 1.f };
+            float w[16] = { s,0,0,0, 0,s,0,0, 0,0,s,0,
+                            h.pos.x, h.pos.y, h.pos.z, 1 };
+            ctx->UpdateSubresource(cbObj, 0, nullptr, w, 0, 0);
+            ctx->UpdateSubresource(cbTint, 0, nullptr, tint, 0, 0);
+            holdMesh.draw(ctx);
+        }
+
+        // HUD: stamina bar + timer + falls + win screen
+        gfx.beginUI();
+        RECT rc2; GetClientRect(window.handle(), &rc2);
+        hud.resize(rc2.right, rc2.bottom);
+
+        // stamina bar top-left
+        hud.draw("STAMINA", 16.f, 14.f, 2.f, 1, 1, 1);
+        {
+            const int segs = 20;
+            int filled = (int)(run.stamina / 100.f * segs + 0.5f);
+            std::string bar;
+            for (int i = 0; i < segs; ++i) bar += (i < filled) ? '#' : '.';
+            float cr = run.stamina > 40 ? 0.2f : 1.0f;
+            float cg = run.stamina > 40 ? 0.85f : 0.25f;
+            hud.draw(bar, 16.f, 32.f, 2.f, cr, cg, 0.2f);
+        }
+        char buf[128];
+        snprintf(buf, sizeof(buf), "TIME %.1f  FALLS %d", run.runTime, run.falls);
+        hud.draw(buf, 16.f, 54.f, 2.f, 1, 1, 1);
+        snprintf(buf, sizeof(buf), "HOLDS NEAR: %s   SEED %llu",
+                 route.nearest(player.pelvisPos(), 2.5f) >= 0 ? "GRAB!" : "-",
+                 (unsigned long long)seed);
+        hud.draw(buf, 16.f, 74.f, 2.f, 0.85f, 0.85f, 0.9f);
+        if (run.exhausted)
+            hud.draw("HANDS SLIP! REST!", 480.f, 60.f, 3.f, 1, 0.25f, 0.2f);
+        if (run.finished) {
+            hud.draw("SUMMIT!!!", 470.f, 240.f, 8.f, 1, 0.85f, 0.1f);
+            snprintf(buf, sizeof(buf), "TIME %.1fs   FALLS %d", run.finishTime, run.falls);
+            hud.draw(buf, 500.f, 330.f, 3.f, 1, 1, 1);
+            hud.draw("ESC TO QUIT - R FOR NEW RUN", 430.f, 380.f, 2.f, 0.9f, 0.9f, 0.9f);
+            if (input.down('R')) {
+                // new run: reset state (same mountain; new seed = relaunch with arg)
+                run.reset(Vec3{0, hf.heightAt(0.f, 118.f), 118.f});
+                player.respawn(run.respawn);
+            }
+        }
+
         gfx.endFrame();
 
         input.endFrame();

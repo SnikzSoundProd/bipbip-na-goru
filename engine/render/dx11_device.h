@@ -12,6 +12,7 @@ public:
     void resize(int width, int height);
 
     void beginFrame(float r, float g, float b); // bind backbuffer + clear
+    void beginUI();                             // disable depth for overlay drawing
     void endFrame();                            // Present (vsync on)
 
     ID3D11Device*          device() const { return device_; }
@@ -28,6 +29,7 @@ private:
     ID3D11Texture2D*        dsTex_  = nullptr;
     ID3D11DepthStencilView* dsv_    = nullptr;
     ID3D11DepthStencilState* dss_   = nullptr;
+    ID3D11DepthStencilState* dssNoDepth_ = nullptr;
     int width_ = 0, height_ = 0;
 };
 

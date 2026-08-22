@@ -52,6 +52,29 @@ void Climber::shutdown(VerletWorld* w) {
     (void)w; // particles live in world's pools; fine to leak indices for now
 }
 
+void Climber::respawn(const Vec3& p) {
+    float gy = hf_->heightAt(p.x, p.z);
+    pelvis_ = Vec3{p.x, std::max(p.y, gy + kPelvisHeight), p.z};
+    pelvisVel_ = Vec3{};
+    // re-seat limbs around the new pelvis
+    auto seat = [&](int idx, const Vec3& off) {
+        Particle& q = w_->particles_[idx];
+        q.pos = pelvis_ + off;
+        q.prev = q.pos;
+    };
+    seat(head_,      {0, 0.62f, 0});
+    seat(shoulderL_, {-0.18f, 0.48f, 0}); seat(shoulderR_, { 0.18f, 0.48f, 0});
+    seat(elbowL_,    {-0.26f, 0.22f, 0}); seat(elbowR_,    { 0.26f, 0.22f, 0});
+    seat(handL_,     {-0.28f,-0.02f, 0}); seat(handR_,     { 0.28f,-0.02f, 0});
+    seat(hipL_,      {-0.10f,-0.05f, 0}); seat(hipR_,      { 0.10f,-0.05f, 0});
+    seat(kneeL_,     {-0.11f,-0.45f, 0}); seat(kneeR_,     { 0.11f,-0.45f, 0});
+    seat(footL_,     {-0.12f,-0.88f, 0}); seat(footR_,     { 0.12f,-0.88f, 0});
+    stepL_.stepping = stepR_.stepping = false;
+    stepL_.anchor = pelvis_ + Vec3{-0.13f, 0, 0};
+    stepR_.anchor = pelvis_ + Vec3{ 0.13f, 0, 0};
+    grabbingL_ = grabbingR_ = false;
+}
+
 Vec3 Climber::headPos() const { return w_->particlePos(head_); }
 
 // pelvis is the "brain": we integrate it manually with crisp control,

@@ -68,6 +68,12 @@ bool Dx11Device::createDepthTargets() {
         ds.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
         ds.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
         if (FAILED(device_->CreateDepthStencilState(&ds, &dss_))) return false;
+
+        // UI overlay: no depth at all
+        D3D11_DEPTH_STENCIL_DESC nd{};
+        nd.DepthEnable = FALSE;
+        nd.StencilEnable = FALSE;
+        if (FAILED(device_->CreateDepthStencilState(&nd, &dssNoDepth_))) return false;
     }
     return true;
 }
@@ -92,6 +98,11 @@ void Dx11Device::beginFrame(float r, float g, float b) {
     ctx_->RSSetViewports(1, &vp);
 }
 
+void Dx11Device::beginUI() {
+    // overlays draw after all 3D with depth OFF so they always show on top
+    if (dssNoDepth_) ctx_->OMSetDepthStencilState(dssNoDepth_, 0);
+}
+
 void Dx11Device::endFrame() {
     swapchain_->Present(1, 0);
 }
@@ -101,6 +112,7 @@ void Dx11Device::shutdown() {
     if (dsTex_) dsTex_->Release();
     if (dsv_) dsv_->Release();
     if (dss_) dss_->Release();
+    if (dssNoDepth_) dssNoDepth_->Release();
     if (swapchain_) swapchain_->Release();
     if (ctx_) ctx_->Release();
     if (device_) device_->Release();

@@ -33,6 +33,9 @@ public:
     Vec3 pelvisPos() const { return pelvis_; }
     Vec3 headPos() const;
     bool grounded() const { return groundedTimer_ > 0; }
+    void respawn(const Vec3& p);
+
+    float staminaFrac(float stamina) const;   // for HUD (delegates nothing, helper)
 
     // render helpers: oriented boxes (yAxis = bone direction, zHint = facing hint)
     struct PartBox { Vec3 center; Vec3 half; Vec3 color; Vec3 yAxis; Vec3 zHint; };

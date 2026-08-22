@@ -2,6 +2,8 @@
 add_executable(bipbip
     main.cpp
     player/climber.cpp
+    world/route.cpp
+    gameplay/run.cpp
 )
 
 # repo root for "game/..." and engine dir for direct includes
