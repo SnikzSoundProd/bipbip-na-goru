@@ -167,13 +167,18 @@ int main(int argc, char** argv) {
         ctx->UpdateSubresource(cbTint, 0, nullptr, whiteTint, 0, 0);
         mountain.draw(ctx);
 
-        // crates: brownish
+        // crates: brownish, full quaternion orientation
         for (auto& b : phys.boxes_) {
-            float c = cosf(b.yaw), s = sinf(b.yaw);
-            float w[16] = { c,0,s,0,  0,1,0,0,  -s,0,c,0,  b.pos.x,b.pos.y,b.pos.z,1 };
-            w[0]*=b.hx*2; w[1]*=b.hx*2; w[2]*=b.hx*2;
-            w[4]*=b.hy*2; w[5]*=b.hy*2; w[6]*=b.hy*2;
-            w[8]*=b.hz*2; w[9]*=b.hz*2; w[10]*=b.hz*2;
+            Vec3 ax0 = rotate(b.rot, Vec3{1,0,0});
+            Vec3 ax1 = rotate(b.rot, Vec3{0,1,0});
+            Vec3 ax2 = rotate(b.rot, Vec3{0,0,1});
+            float sx = b.hx*2.f, sy = b.hy*2.f, sz = b.hz*2.f;
+            float w[16] = {
+                ax0.x*sx, ax0.y*sx, ax0.z*sx, 0,
+                ax1.x*sy, ax1.y*sy, ax1.z*sy, 0,
+                ax2.x*sz, ax2.y*sz, ax2.z*sz, 0,
+                b.pos.x, b.pos.y, b.pos.z, 1
+            };
             ctx->UpdateSubresource(cbObj, 0, nullptr, w, 0, 0);
             float brown[4] = { 0.72f, 0.55f, 0.34f, 1 };
             ctx->UpdateSubresource(cbTint, 0, nullptr, brown, 0, 0);

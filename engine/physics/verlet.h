@@ -23,12 +23,14 @@ struct DistanceConstraint {
     float stiffness; // 0..1 per-iteration correction factor
 };
 
-// Dynamic box prop (rotating: yaw-only for v1, full quat later)
+// Dynamic rigid box: full 3D rotation (quaternion), inertia tensor,
+// impulse-based contacts — rolls down slopes, bounces off corners.
 struct BoxProp {
     Vec3 pos;
     Vec3 vel;
-    float yaw, yawVel;
-    float hx, hy, hz;   // half extents
+    Quat rot;            // orientation
+    Vec3 angVel;         // world-space angular velocity
+    float hx, hy, hz;    // half extents
 };
 
 class VerletWorld {
