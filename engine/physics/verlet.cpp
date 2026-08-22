@@ -222,19 +222,24 @@ Vec3 VerletWorld::collideSphereWithBox(const Vec3& posIn, float radius, int boxI
     float vrel = dot(v - bv, n);        // negative when approaching
 
     if (vrel < 0.f) {
-        // player momentum shoves the box (player mass ~70kg, boxes ~1-4)
+        // player (70kg) shoves the box; box gets AT MOST ~player's speed.
         float bmEff = 1.f / effInvMass(b, ax, r, n);
         float pm = 70.f;
-        float j = -vrel * (pm * bmEff) / (pm + bmEff);   // full elastic share
+        float j = -vrel * (pm * bmEff) / (pm + bmEff);
         applyImpulseVel(b, ax, he, r, n * j);
-        // player loses that velocity component (inelastic-ish contact)
-        float lose = -vrel * (bmEff / (pm + bmEff)) * 1.6f;
-        v = v - n * (-vrel) * std::min(1.f, lose / std::max(0.001f, -vrel));
-        // simpler & stable: hard-stop player along n
-        float into = dot(v, n);
-        if (into < dot(pointVel(b, r), n))
-            v = v - n * (into - dot(pointVel(b, r), n));
+        // cap: box must not end up moving away FASTER than the player
+        float after = dot(pointVel(b, r), n);
+        float cap = -vrel;                       // |approach| speed
+        if (after > cap && after > 0.f) {
+            float excess = (after - cap) / std::max(1e-3f, 1.f / bmEff);
+            applyImpulseVel(b, ax, he, r, n * (-excess * 0.9f));
+        }
     }
+    // ALWAYS hard-stop player velocity into the box surface — this is what
+    // makes it solid no matter what the box does
+    float bvN = dot(pointVel(b, r), n);
+    float into = dot(v, n) - bvN;
+    if (into < 0.f) v = v - n * into;
 
     // positional: never allow overlap — sphere rides on the surface
     return push;
@@ -320,19 +325,21 @@ void VerletWorld::collideBoxesTerrain() {
             Vec3 v = pointVel(b, rc);
             float vn = dot(v, tn);
             if (vn < 0.f) {
-                float e_rest = (vn < -2.5f) ? 0.30f : 0.f;   // bounce only on real hits
+                // bounce ONLY on genuinely hard hits; soft touches get zero
+                // restitution so resting bodies don't chatter
+                float e_rest = (vn < -3.f) ? 0.35f : 0.f;
 
                 float em = effInvMass(b, ax, rc, tn);
                 float jn = -(1.f + e_rest) * vn / em;
-                applyImpulseVel(b, ax, he, rc, tn * jn);
+                if (jn > 0.f) applyImpulseVel(b, ax, he, rc, tn * jn);
 
                 // Coulomb friction against tangential motion
-                Vec3 vt = v - tn * dot(v, tn);
+                Vec3 vt = v - tn * vn;
                 float tl = length(vt);
-                if (tl > 1e-4f) {
+                if (tl > 1e-3f) {
                     float et = effInvMass(b, ax, rc, normalize(-vt));
                     float jt = tl / et;
-                    float maxF = 0.6f * jn;
+                    float maxF = 0.65f * jn;
                     if (jt > maxF) jt = maxF;
                     applyImpulseVel(b, ax, he, rc, normalize(-vt) * jt);
                 }
@@ -340,11 +347,16 @@ void VerletWorld::collideBoxesTerrain() {
         }
 
         if (contacts > 0) {
-            b.pos.y += maxPen * 0.9f;                 // positional lift
-            // sleep bookkeeping: calm body stays calm
-            if (length(b.vel) < 0.25f && length(b.angVel) < 0.35f) {
+            // Baumgarte-style positional lift with SLOP: only correct what
+            // exceeds the slop band, and only partially per frame — kills jitter
+            const float kSlop = 0.02f;
+            float over = maxPen - kSlop;
+            if (over > 0.f) b.pos.y += over * 0.35f;
+
+            // sleep: slow body on ground freezes solid (no more trembling)
+            if (length(b.vel) < 0.30f && length(b.angVel) < 0.40f) {
                 b.sleepTimer += 1.f/60.f;
-                if (b.sleepTimer > 0.5f) {
+                if (b.sleepTimer > 0.35f) {
                     b.sleeping = true;
                     b.vel = Vec3{}; b.angVel = Vec3{};
                 }
