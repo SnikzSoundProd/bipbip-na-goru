@@ -16,6 +16,16 @@ cd /c/msys64 && bsdtar.exe -xf "C:/Users/apex/AppData/Local/Temp/<pkg>.pkg.tar"
 ```
 Pitfall: bsdtar is native — pass Windows paths; cygpath /tmp lies (maps to msys64/tmp).
 
+## Physics: custom verlet solver (engine/physics/verlet.*)
+Jolt was abandoned after integration hell: lib built Release vs Debug TUs caused
+`JPH_ENABLE_ASSERTS`/`JPH_PROFILE_ENABLED`/`JPH_DEBUG_RENDERER`/`JPH_OBJECT_STREAM`
+define mismatches (runtime version check aborts). Own solver instead:
+particles + distance constraints + heightfield/AABB collision, fixed 60Hz,
+deterministic (network-friendly). Ragdoll climber: semi-kinematic pelvis +
+verlet limbs on constraints (game/player/climber.*).
+If ever resurrecting Jolt: build with `-DUSE_ASSERTS=ON`, match ALL defines
+(JPH_ENABLE_ASSERTS JPH_OBJECT_STREAM [+ renderer/profiler if on]) in consumer
+target, AND build consumer RelWithDebInfo (-DNDEBUG) not Debug.
 ## GameNetworkingSockets 1.6.0
 Source: C:/Users/apex/Downloads/GameNetworkingSockets-1.6.0/GameNetworkingSockets-1.6.0
 Build dir: thirdparty/gns-build
