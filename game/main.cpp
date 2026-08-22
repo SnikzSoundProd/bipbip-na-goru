@@ -1,14 +1,16 @@
 // bipbip — «БИП БИП НА ГОРУ»
-// Phase 1.3 check: seeded mountain terrain, orbiting debug camera.
+// Phase 2 (custom verlet physics): boxes tumble down the mountain.
 #include "platform/window_win32.h"
 #include "render/dx11_device.h"
 #include "render/shader_manager.h"
 #include "render/mesh.h"
 #include "render/camera.h"
 #include "world/heightfield.h"
+#include "physics/verlet.h"
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 using namespace bip;
 
@@ -38,9 +40,10 @@ int main(int argc, char** argv) {
         fprintf(stderr, "PS error:\n%s\n", errs.c_str()); return 5;
     }
 
-    // --- the mountain --------------------------------------------------------
+    // --- world ---------------------------------------------------------------
+    fprintf(stderr, "[chk] terrain gen...\n"); fflush(stderr);
     HeightField hf;
-    hf.generate(seed, /*worldSize*/300.f, /*res*/256);
+    hf.generate(seed, 300.f, 256);
     Mesh mountain;
     {
         const auto& vv = hf.vertices();
@@ -48,6 +51,28 @@ int main(int argc, char** argv) {
         if (!mountain.init(gfx.device(), vv.data(), (uint32_t)vv.size(),
                            ii.data(), (uint32_t)ii.size())) return 6;
     }
+    fprintf(stderr, "[chk] terrain ready\n"); fflush(stderr);
+
+    VerletWorld phys;
+    phys.init(&hf);
+
+    auto boxVerts = geom::box(1.f, 1.f, 1.f);
+    auto boxIdx = geom::boxIndices();
+    Mesh crateMesh;
+    if (!crateMesh.init(gfx.device(), boxVerts.data(), (uint32_t)boxVerts.size(),
+                        boxIdx.data(), (uint32_t)boxIdx.size())) return 8;
+
+    // crates scattered over the slopes
+    Rng rng(seed ^ 0xC0FFEE);
+    for (int i = 0; i < 14; ++i) {
+        float a = rng.unit() * 6.2831853f;
+        float r = 20.f + rng.unit() * 60.f;
+        float x = cosf(a) * r, z = sinf(a) * r;
+        float y = hf.heightAt(x, z) + 2.f + rng.unit() * 20.f;
+        float s = 1.2f + rng.unit() * 1.5f;
+        phys.addBox(Vec3{x, y, z}, s*0.5f, s*0.5f, s*0.5f);
+    }
+    fprintf(stderr, "[chk] %d crates, entering loop\n", (int)phys.boxes_.size()); fflush(stderr);
 
     // constant buffers
     struct CBPerFrame { float viewProj[16]; };
@@ -59,12 +84,15 @@ int main(int argc, char** argv) {
     cbd.ByteWidth = sizeof(CBPerObject);
     gfx.device()->CreateBuffer(&cbd, nullptr, &cbObj);
 
-    // identity world matrix
     float identity[16] = { 1,0,0,0,  0,1,0,0,  0,0,1,0,  0,0,0,1 };
 
     InputState input;
     bool prevKeys[256] = {};
     uint64_t frame = 0;
+    double simTime = 0;
+    const double kFixedDt = 1.0 / 60.0;
+    double acc = 0;
+
     while (!window.shouldClose()) {
         window.pumpMessages(input);
         if (input.down(VK_ESCAPE)) break;
@@ -73,10 +101,15 @@ int main(int argc, char** argv) {
         if (rc.right > 0 && rc.bottom > 0) gfx.resize(rc.right, rc.bottom);
         float aspect = (float)rc.right / (float)rc.bottom;
 
-        // slow auto-orbit camera around the peak
-        float t = frame / 60.f;
+        acc += 1.0 / 60.0;
+        int steps = 0;
+        while (acc >= kFixedDt && steps < 4) {
+            phys.step((float)kFixedDt);
+            acc -= kFixedDt; simTime += kFixedDt; ++steps;
+        }
+
         static Camera cam;
-        cam.yaw = t * 0.15f;
+        cam.yaw = (float)simTime * 0.15f;
         cam.pitch = 0.42f;
         cam.pos = Vec3{ sinf(cam.yaw), 0.f, cosf(cam.yaw) } * -170.f + Vec3{0, 70.f, 0};
 
@@ -85,15 +118,34 @@ int main(int argc, char** argv) {
 
         ID3D11DeviceContext* ctx = gfx.ctx();
         ctx->UpdateSubresource(cbFrame, 0, nullptr, vp, 0, 0);
-        ctx->UpdateSubresource(cbObj, 0, nullptr, identity, 0, 0);
 
-        gfx.beginFrame(0.45f, 0.65f, 0.90f); // sky
+        gfx.beginFrame(0.45f, 0.65f, 0.90f);
         ctx->IASetInputLayout(il);
         ctx->VSSetShader(vs, nullptr, 0);
         ctx->PSSetShader(ps, nullptr, 0);
         ctx->VSSetConstantBuffers(0, 1, &cbFrame);
         ctx->VSSetConstantBuffers(1, 1, &cbObj);
+
+        ctx->UpdateSubresource(cbObj, 0, nullptr, identity, 0, 0);
         mountain.draw(ctx);
+
+        for (auto& b : phys.boxes_) {
+            float c = cosf(b.yaw), s = sinf(b.yaw);
+            float w[16] = {
+                 c, 0, s, 0,
+                 0, 1, 0, 0,
+                -s, 0, c, 0,
+                 b.pos.x, b.pos.y, b.pos.z, 1
+            };
+            // scale axes
+            for (int k = 0; k < 16; ++k) w[k] *= (k % 4 == 3) ? 1.f : 1.f;
+            w[0] *= b.hx*2; w[1] *= b.hx*2; w[2] *= b.hx*2;
+            w[4] *= b.hy*2; w[5] *= b.hy*2; w[6] *= b.hy*2;
+            w[8] *= b.hz*2; w[9] *= b.hz*2; w[10] *= b.hz*2;
+
+            ctx->UpdateSubresource(cbObj, 0, nullptr, w, 0, 0);
+            crateMesh.draw(ctx);
+        }
         gfx.endFrame();
 
         memcpy(prevKeys, input.keys, sizeof(prevKeys));
@@ -101,8 +153,7 @@ int main(int argc, char** argv) {
         ++frame;
     }
 
-    mountain.shutdown();
-    gfx.shutdown();
+    crateMesh.shutdown(); mountain.shutdown(); gfx.shutdown();
     printf("clean exit after %llu frames\n", (unsigned long long)frame);
     return 0;
 }
