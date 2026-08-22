@@ -43,8 +43,9 @@ void Climber::init(VerletWorld* w, const HeightField* hf, const Vec3& spawn) {
     // legs
     C(hipL_, kneeL_, 1.f); C(kneeL_, footL_, 1.f); C(hipL_, footL_, 0.2f);
     C(hipR_, kneeR_, 1.f); C(kneeR_, footR_, 1.f); C(hipR_, footR_, 0.2f);
-    // hips follow pelvis via soft constraints to a pinned proxy? simpler:
-    // pin hips weakly to pelvis by making pelvis drive them in updateBalance.
+
+    stepL_.anchor = pelvis_ + Vec3{-0.13f, 0, 0};
+    stepR_.anchor = pelvis_ + Vec3{ 0.13f, 0, 0};
 }
 
 void Climber::shutdown(VerletWorld* w) {
@@ -114,7 +115,6 @@ void Climber::applyMovement(const Vec3& moveDir, bool wantJump, float dt) {
 }
 
 void Climber::updateGrab(bool grabL, bool grabR, const Vec3& pl, const Vec3& pr) {
-    // start grabs
     if (grabL && !grabbingL_) {
         Vec3 handPos = w_->particlePos(handL_);
         Vec3 d = pl - handPos;
@@ -165,35 +165,117 @@ void Climber::control(const Vec3& moveDir, bool wantJump, bool grabL, bool grabR
 void Climber::simulate(float dt) {
     applyMovement(moveDir_, wantJump_, dt);
     updateBalance(dt);
+    updateFeet(dt);
     updateGrab(grabL_, grabR_, grabPointL_, grabPointR_);
     wantJump_ = false; // one-shot
 }
 
+void Climber::updateFeet(float dt) {
+    // Procedural walk: feet stick to ground; when pelvis drifts too far from
+    // a planted foot, that foot steps toward a predicted spot.
+    float speed = length(Vec3{pelvisVel_.x, 0, pelvisVel_.z});
+    bool canStep = grounded() && speed > 0.6f && !grabbingL_ && !grabbingR_;
+
+    for (int side = 0; side < 2; ++side) {
+        StepState& st = side ? stepR_ : stepL_;
+        int footIdx = side ? footR_ : footL_;
+        Particle& f = w_->particles_[footIdx];
+
+        if (!canStep) {
+            // reset any mid-step pose smoothly (verlet settles it)
+            st.stepping = false;
+            continue;
+        }
+
+        if (!st.stepping) {
+            float drift = length(Vec3{pelvis_.x - st.anchor.x, 0, pelvis_.z - st.anchor.z});
+            float otherDrift = length(Vec3{
+                pelvis_.x - (side ? stepL_.anchor.x : stepR_.anchor.x), 0,
+                pelvis_.z - (side ? stepL_.anchor.z : stepR_.anchor.z)});
+            // step when drifted far AND the other foot is planted (alternating gait)
+            if (drift > 0.55f && !(side ? stepL_.stepping : stepR_.stepping)
+                && drift > otherDrift * 0.6f) {
+                st.stepping = true;
+                st.t = 0.f;
+                st.from = f.pos;
+                Vec3 dir = normalize(Vec3{pelvisVel_.x, 0, pelvisVel_.z});
+                Vec3 lateral = normalize(cross(Vec3{0,1,0}, dir));
+                Vec3 want = pelvis_ + dir * 0.42f + lateral * (side ? 0.13f : -0.13f);
+                st.to = Vec3{want.x, hf_->heightAt(want.x, want.z), want.z};
+            }
+        } else {
+            st.t += dt * (3.5f + speed * 0.5f);
+            if (st.t >= 1.f) {
+                st.t = 1.f;
+                st.stepping = false;
+                st.anchor = st.to;
+            }
+            float e = st.t * st.t * (3.f - 2.f * st.t);   // smoothstep
+            Vec3 p = st.from + (st.to - st.from) * e;
+            p.y += sinf(st.t * 3.14159f) * 0.16f;          // foot lift
+            f.pos = p;
+            f.prev = p;                                     // kinematic during swing
+        }
+    }
+}
+
 int Climber::collectParts(PartBox* out) const {
     int n = 0;
-    auto add = [&](const Vec3& c, const Vec3& h, const Vec3& col){ 
-        out[n].center = c; out[n].half = h; out[n].color = col; ++n; };
+    // add: center, half-extents, color, bone axis (box local Y), facing hint (local Z)
+    auto add = [&](const Vec3& c, const Vec3& h, const Vec3& col,
+                   const Vec3& yAxis, const Vec3& zHint) {
+        out[n].center = c; out[n].half = h; out[n].color = col;
+        out[n].yAxis = normalize(yAxis);
+        Vec3 x = normalize(cross(out[n].yAxis, zHint));
+        out[n].zHint = normalize(cross(x, out[n].yAxis));
+        ++n;
+    };
+    auto P = [&](int i){ return w_->particlePos(i); };
 
     Vec3 shirt = vis_.shirt, pants = vis_.pants, skin = vis_.skin;
 
-    // torso between mid-shoulders and mid-hips
-    Vec3 shMid = (w_->particlePos(shoulderL_) + w_->particlePos(shoulderR_)) * 0.5f;
-    Vec3 hipMid = (w_->particlePos(hipL_) + w_->particlePos(hipR_)) * 0.5f;
-    Vec3 torsoC = (shMid + hipMid) * 0.5f;
-    add(torsoC, Vec3{0.16f, length(shMid-hipMid)*0.5f + 0.06f, 0.10f}, shirt);
+    // --- torso: oriented along spine, faces movement direction
+    Vec3 shL = P(shoulderL_), shR = P(shoulderR_);
+    Vec3 hipL = P(hipL_),     hipR = P(hipR_);
+    Vec3 shMid = (shL + shR) * 0.5f;
+    Vec3 hipMid = (hipL + hipR) * 0.5f;
+    float torsoLen = length(shMid - hipMid) + 0.10f;
+    Vec3 faceDir = normalize(shR - shL);                       // left->right = forward hint
+    add((shMid + hipMid) * 0.5f,
+        Vec3{0.16f, torsoLen * 0.5f, 0.10f}, shirt,
+        shMid - hipMid, faceDir);
 
-    add(w_->particlePos(head_), Vec3{0.11f,0.11f,0.11f}, skin);
+    // --- head: upright-ish but tilts with neck
+    Vec3 headP = P(head_);
+    add(headP, Vec3{0.115f, 0.115f, 0.115f}, skin,
+        headP - shMid, faceDir);
 
-    // limbs as small boxes at joints (v1: chunky segments)
-    auto seg = [&](int a, int b, Vec3 col){
-        Vec3 pa = w_->particlePos(a), pb = w_->particlePos(b);
-        add((pa+pb)*0.5f, Vec3{0.055f, length(pb-pa)*0.5f+0.03f, 0.055f}, col);
+    // --- limbs: boxes aligned to bones + joint cubes at knees/elbows/shoulders/hips/hands/feet
+    auto seg = [&](int a, int b, Vec3 col, float thick) {
+        Vec3 pa = P(a), pb = P(b);
+        Vec3 d = pb - pa;
+        float len = length(d);
+        if (len < 1e-4f) return;
+        add((pa+pb)*0.5f, Vec3{thick, len*0.5f + thick*0.6f, thick},
+            col, d, cross(normalize(d), faceDir));
     };
-    seg(shoulderL_, elbowL_, shirt); seg(elbowL_, handL_, skin);
-    seg(shoulderR_, elbowR_, shirt); seg(elbowR_, handR_, skin);
-    seg(hipL_, kneeL_, pants);       seg(kneeL_, footL_, skin);
-    seg(hipR_, kneeR_, pants);       seg(kneeR_, footR_, skin);
-    return n;
+    auto joint = [&](int i, Vec3 col, float r) {
+        add(P(i), Vec3{r,r,r}, col, Vec3{0,1,0}, faceDir);
+    };
+
+    seg(shoulderL_, elbowL_, shirt, 0.058f); joint(elbowL_, shirt, 0.062f);
+    seg(elbowL_, handL_, skin, 0.050f);      joint(handL_, skin, 0.055f);
+    seg(shoulderR_, elbowR_, shirt, 0.058f); joint(elbowR_, shirt, 0.062f);
+    seg(elbowR_, handR_, skin, 0.050f);      joint(handR_, skin, 0.055f);
+    joint(shoulderL_, shirt, 0.07f);         joint(shoulderR_, shirt, 0.07f);
+
+    seg(hipL_, kneeL_, pants, 0.062f);       joint(kneeL_, pants, 0.065f);
+    seg(kneeL_, footL_, pants, 0.055f);      joint(footL_, skin, 0.058f);
+    seg(hipR_, kneeR_, pants, 0.062f);       joint(kneeR_, pants, 0.065f);
+    seg(kneeR_, footR_, pants, 0.055f);      joint(footR_, skin, 0.058f);
+    joint(hipL_, pants, 0.07f);              joint(hipR_, pants, 0.07f);
+
+    return n;   // ~23 parts
 }
 
 } // namespace bip

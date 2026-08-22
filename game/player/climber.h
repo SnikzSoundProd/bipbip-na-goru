@@ -34,12 +34,13 @@ public:
     Vec3 headPos() const;
     bool grounded() const { return groundedTimer_ > 0; }
 
-    // render helpers: returns center+size per drawn box (torso, head, 2 arms x2, 2 legs x2)
-    struct PartBox { Vec3 center; Vec3 half; Vec3 color; };
+    // render helpers: oriented boxes (yAxis = bone direction, zHint = facing hint)
+    struct PartBox { Vec3 center; Vec3 half; Vec3 color; Vec3 yAxis; Vec3 zHint; };
     int collectParts(PartBox* out) const;
 
 private:
     void updateBalance(float dt);
+    void updateFeet(float dt);
     void applyMovement(const Vec3& moveDir, bool wantJump, float dt);
     void updateGrab(bool grabL, bool grabR, const Vec3& pl, const Vec3& pr);
 
@@ -64,6 +65,14 @@ private:
     bool wantJump_ = false;
     bool grabL_ = false, grabR_ = false;
     Vec3 grabPointL_{}, grabPointR_{};
+
+    // procedural stepping
+    struct StepState {
+        bool stepping = false;
+        float t = 0.f;
+        Vec3 from{}, to{}, anchor{};
+    };
+    StepState stepL_, stepR_;
 
     float groundedTimer_ = 0.f;
     float stamina_ = 100.f;

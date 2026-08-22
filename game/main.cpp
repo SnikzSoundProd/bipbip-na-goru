@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
     // the boi
     Climber player;
     player.init(&phys, &hf, Vec3{0, 0, -80});
-    Climber::PartBox parts[16];
+    Climber::PartBox parts[32];
 
     // constant buffers
     struct CBPerFrame { float viewProj[16]; };
@@ -179,16 +179,22 @@ int main(int argc, char** argv) {
             ctx->UpdateSubresource(cbTint, 0, nullptr, brown, 0, 0);
             unitMesh.draw(ctx);
         }
-        // player body parts
+        // player body parts: oriented boxes (bone-aligned, joint cubes seal gaps)
         int np = player.collectParts(parts);
         for (int i = 0; i < np; ++i) {
-            float w[16] = { 1,0,0,0,  0,1,0,0,  0,0,1,0,
-                            parts[i].center.x, parts[i].center.y, parts[i].center.z, 1 };
-            w[0] = parts[i].half.x*2;
-            w[5] = parts[i].half.y*2;
-            w[10] = parts[i].half.z*2;
+            const auto& pb = parts[i];
+            Vec3 y = pb.yAxis;
+            Vec3 x = normalize(cross(y, pb.zHint));
+            Vec3 z = cross(x, y);
+            float sx = pb.half.x * 2.f, sy = pb.half.y * 2.f, sz = pb.half.z * 2.f;
+            float w[16] = {
+                x.x*sx, x.y*sx, x.z*sx, 0,
+                y.x*sy, y.y*sy, y.z*sy, 0,
+                z.x*sz, z.y*sz, z.z*sz, 0,
+                pb.center.x, pb.center.y, pb.center.z, 1
+            };
             ctx->UpdateSubresource(cbObj, 0, nullptr, w, 0, 0);
-            float col[4] = { parts[i].color.x, parts[i].color.y, parts[i].color.z, 1 };
+            float col[4] = { pb.color.x, pb.color.y, pb.color.z, 1 };
             ctx->UpdateSubresource(cbTint, 0, nullptr, col, 0, 0);
             unitMesh.draw(ctx);
         }
