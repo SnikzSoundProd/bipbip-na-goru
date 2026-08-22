@@ -43,6 +43,11 @@ public:
     int addConstraint(int a, int b, float stiffness);
     int addBox(const Vec3& pos, float hx, float hy, float hz);
 
+    // Kinematic sphere (player pelvis) vs box: pushes sphere out, transfers
+    // momentum to the box. Returns applied push; updates *velInOut.
+    Vec3 collideSphereWithBox(const Vec3& posIn, float radius, int boxIdx,
+                              Vec3* velInOut);
+
     // particle <-> rigid coupling helpers for the ragdoll later:
     void setParticlePinned(int i, bool pinned);
     Vec3 particlePos(int i) const { return particles_[i].pos; }
@@ -57,6 +62,7 @@ private:
     void solveConstraints();
     void collideHeightField();
     void collideBoxesParticles();
+    void collideBoxesBoxes();
     void integrateBoxes(float dt);
     void collideBoxesTerrain();
 

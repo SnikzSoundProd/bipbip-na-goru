@@ -106,6 +106,13 @@ void Climber::applyMovement(const Vec3& moveDir, bool wantJump, float dt) {
 
     pelvis_ = pelvis_ + pelvisVel_ * dt;
 
+    // pelvis vs boxes: kinematic sphere pushes through NOTHING; shoves boxes
+    for (int bi = 0; bi < (int)w_->boxes_.size(); ++bi) {
+        Vec3 push = w_->collideSphereWithBox(pelvis_, 0.34f, bi, &pelvisVel_);
+        if (!(push.x == 0.f && push.y == 0.f && push.z == 0.f))
+            pelvis_ = pelvis_ + push;
+    }
+
     // hard floor: never sink into terrain
     float gy = hf_->heightAt(pelvis_.x, pelvis_.z) + 0.45f;
     if (pelvis_.y < gy) {

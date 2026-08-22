@@ -138,6 +138,58 @@ void VerletWorld::collideBoxesParticles() {
     }
 }
 
+Vec3 VerletWorld::collideSphereWithBox(const Vec3& posIn, float radius, int boxIdx,
+                                       Vec3* velInOut) {
+    BoxProp& b = boxes_[boxIdx];
+    Vec3 right, fwd;
+    yawAxes(b.yaw, right, fwd);
+    Vec3 push;
+    if (!sphereOBB(posIn, radius, b.pos, right, fwd, b.hx, b.hy, b.hz, push))
+        return Vec3{};
+
+    // box gets shoved by the sphere's motion
+    Vec3& v = *velInOut;
+    b.vel = b.vel + push * 6.f + v * 0.25f;
+    b.yawVel += (push.x * fwd.z - push.z * fwd.x) * 0.35f;
+    // dampen the sphere's velocity along the push (can't tunnel through)
+    float vn = dot(v, normalize(push));
+    if (vn < 0.f) v = v - normalize(push) * vn;
+    return push;
+}
+
+void VerletWorld::collideBoxesBoxes() {
+    // yaw-only OBB vs OBB: approximate each as a sphere of radius = avg half extent
+    // for the broad pass, then resolve with the sphere-OBB routine both ways.
+    for (size_t i = 0; i < boxes_.size(); ++i) {
+        for (size_t j = i + 1; j < boxes_.size(); ++j) {
+            BoxProp& A = boxes_[i];
+            BoxProp& B = boxes_[j];
+            float ra = (A.hx + A.hy + A.hz) * 0.62f;
+            float rb = (B.hx + B.hy + B.hz) * 0.62f;
+            Vec3 d = B.pos - A.pos;
+            float dist2 = dot(d, d);
+            float rsum = ra + rb;
+            if (dist2 > rsum * rsum || dist2 < 1e-8f) continue;
+            float dist = sqrtf(dist2);
+            Vec3 n = d * (1.f / dist);
+            float overlap = rsum - dist;
+            // split by "mass" (volume-ish)
+            float ma = A.hx * A.hy * A.hz, mb = B.hx * B.hy * B.hz;
+            float wa = mb / (ma + mb), wb = ma / (ma + mb);
+            A.pos = A.pos - n * (overlap * wa);
+            B.pos = B.pos + n * (overlap * wb);
+            // exchange a bit of velocity
+            Vec3 rel = B.vel - A.vel;
+            float vn = dot(rel, n);
+            if (vn < 0.f) {
+                Vec3 imp = n * (vn * 0.6f);
+                A.vel = A.vel + imp * wa;
+                B.vel = B.vel - imp * wb;
+            }
+        }
+    }
+}
+
 void VerletWorld::integrateBoxes(float dt) {
     for (auto& b : boxes_) {
         b.vel = b.vel + gravity_ * dt;
@@ -168,6 +220,7 @@ void VerletWorld::step(float dt) {
     solveConstraints();          // includes heightfield for particles
     collideBoxesTerrain();
     collideBoxesParticles();
+    collideBoxesBoxes();
     collideHeightField();        // final settle pass
 }
 
