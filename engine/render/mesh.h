@@ -31,7 +31,9 @@ private:
 
 // helpers to build geometry
 namespace geom {
-std::vector<Vertex> box(float sx, float sy, float sz);          // centered cube
+std::vector<Vertex> box(float sx, float sy, float sz);          // centered cube, white
+std::vector<Vertex> boxColored(float sx, float sy, float sz,
+                                float r, float g, float b);     // tinted cube
 std::vector<uint32_t> boxIndices();                              // 36 indices
 }
 

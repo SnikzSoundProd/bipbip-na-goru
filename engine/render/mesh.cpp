@@ -39,6 +39,11 @@ void Mesh::draw(ID3D11DeviceContext* ctx) const {
 namespace geom {
 
 std::vector<Vertex> box(float sx, float sy, float sz) {
+    return boxColored(sx, sy, sz, 1.f, 1.f, 1.f);
+}
+
+std::vector<Vertex> boxColored(float sx, float sy, float sz,
+                               float cr, float cg, float cb) {
     sx *= 0.5f; sy *= 0.5f; sz *= 0.5f;
     // 6 faces x 4 verts; normals per face; white color default
     const float px[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
@@ -58,7 +63,7 @@ std::vector<Vertex> box(float sx, float sy, float sz) {
             vt.normal[0] = n.x; vt.normal[1] = n.y; vt.normal[2] = n.z;
             vt.uv[0] = (c == 0 || c == 3) ? 0.f : 1.f;
             vt.uv[1] = (c < 2) ? 0.f : 1.f;
-            vt.color[0] = vt.color[1] = vt.color[2] = 1.f;
+            vt.color[0] = cr; vt.color[1] = cg; vt.color[2] = cb;
             v.push_back(vt);
         }
     }

@@ -5,6 +5,9 @@ cbuffer PerFrame : register(b0) {
 cbuffer PerObject : register(b1) {
     float4x4 world;
 };
+cbuffer PerTint : register(b2) {
+    float4 tint; // rgb multiplier, a unused
+};
 
 struct VSIn {
     float3 pos     : POSITION;
@@ -28,6 +31,6 @@ PSIn main(VSIn i) {
     o.pos = mul(viewProj, wp);
     o.normal = normalize(mul((float3x3)world, i.normal));
     o.uv = i.uv;
-    o.color = i.color;
+    o.color = i.color * tint.rgb;
     return o;
 }

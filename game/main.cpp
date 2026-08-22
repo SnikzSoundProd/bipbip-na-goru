@@ -1,5 +1,6 @@
 // bipbip — «БИП БИП НА ГОРУ»
-// Phase 2 (custom verlet physics): boxes tumble down the mountain.
+// Phase 2.2-2.4: verlet ragdoll climber, WASD + jump + two-hand grabbing,
+// chase camera. Boxes tumble around him.
 #include "platform/window_win32.h"
 #include "render/dx11_device.h"
 #include "render/shader_manager.h"
@@ -7,6 +8,7 @@
 #include "render/camera.h"
 #include "world/heightfield.h"
 #include "physics/verlet.h"
+#include "game/player/climber.h"
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -41,7 +43,6 @@ int main(int argc, char** argv) {
     }
 
     // --- world ---------------------------------------------------------------
-    fprintf(stderr, "[chk] terrain gen...\n"); fflush(stderr);
     HeightField hf;
     hf.generate(seed, 300.f, 256);
     Mesh mountain;
@@ -51,47 +52,55 @@ int main(int argc, char** argv) {
         if (!mountain.init(gfx.device(), vv.data(), (uint32_t)vv.size(),
                            ii.data(), (uint32_t)ii.size())) return 6;
     }
-    fprintf(stderr, "[chk] terrain ready\n"); fflush(stderr);
 
     VerletWorld phys;
     phys.init(&hf);
 
+    // crate mesh (tinted at draw time)
     auto boxVerts = geom::box(1.f, 1.f, 1.f);
     auto boxIdx = geom::boxIndices();
-    Mesh crateMesh;
-    if (!crateMesh.init(gfx.device(), boxVerts.data(), (uint32_t)boxVerts.size(),
-                        boxIdx.data(), (uint32_t)boxIdx.size())) return 8;
+    Mesh unitMesh;
+    if (!unitMesh.init(gfx.device(), boxVerts.data(), (uint32_t)boxVerts.size(),
+                       boxIdx.data(), (uint32_t)boxIdx.size())) return 8;
 
-    // crates scattered over the slopes
-    Rng rng(seed ^ 0xC0FFEE);
     for (int i = 0; i < 14; ++i) {
+        Rng rng(seed ^ (0xC0FFEE + i));
         float a = rng.unit() * 6.2831853f;
         float r = 20.f + rng.unit() * 60.f;
         float x = cosf(a) * r, z = sinf(a) * r;
-        float y = hf.heightAt(x, z) + 2.f + rng.unit() * 20.f;
-        float s = 1.2f + rng.unit() * 1.5f;
+        float y = hf.heightAt(x, z) + 2.f + rng.unit() * 15.f;
+        float s = 1.2f + rng.unit() * 1.2f;
         phys.addBox(Vec3{x, y, z}, s*0.5f, s*0.5f, s*0.5f);
     }
-    fprintf(stderr, "[chk] %d crates, entering loop\n", (int)phys.boxes_.size()); fflush(stderr);
+
+    // the boi
+    Climber player;
+    player.init(&phys, &hf, Vec3{0, 0, -80});
+    Climber::PartBox parts[16];
 
     // constant buffers
     struct CBPerFrame { float viewProj[16]; };
     struct CBPerObject { float world[16]; };
-    ID3D11Buffer* cbFrame = nullptr; ID3D11Buffer* cbObj = nullptr;
+    struct CBPerTint  { float tint[4]; };
+    ID3D11Buffer* cbFrame = nullptr; ID3D11Buffer* cbObj = nullptr; ID3D11Buffer* cbTint = nullptr;
     D3D11_BUFFER_DESC cbd{}; cbd.Usage = D3D11_USAGE_DEFAULT;
     cbd.ByteWidth = sizeof(CBPerFrame); cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     gfx.device()->CreateBuffer(&cbd, nullptr, &cbFrame);
     cbd.ByteWidth = sizeof(CBPerObject);
     gfx.device()->CreateBuffer(&cbd, nullptr, &cbObj);
+    cbd.ByteWidth = sizeof(CBPerTint);
+    gfx.device()->CreateBuffer(&cbd, nullptr, &cbTint);
 
     float identity[16] = { 1,0,0,0,  0,1,0,0,  0,0,1,0,  0,0,0,1 };
+    float whiteTint[4] = { 1,1,1,1 };
 
     InputState input;
-    bool prevKeys[256] = {};
     uint64_t frame = 0;
     double simTime = 0;
     const double kFixedDt = 1.0 / 60.0;
     double acc = 0;
+    Camera chaseCam;                       // yaw/pitch driven by mouse, pos by player
+    chaseCam.pos = Vec3{0, 5, -90};
 
     while (!window.shouldClose()) {
         window.pumpMessages(input);
@@ -104,17 +113,45 @@ int main(int argc, char** argv) {
         acc += 1.0 / 60.0;
         int steps = 0;
         while (acc >= kFixedDt && steps < 4) {
+            // movement basis from camera yaw
+            float cy = chaseCam.yaw;
+            Vec3 f{ sinf(cy), 0, cosf(cy) };
+            Vec3 r{ cosf(cy), 0, -sinf(cy) };
+            Vec3 move{};
+            if (input.down('W')) move = move + f;
+            if (input.down('S')) move = move - f;
+            if (input.down('A')) move = move - r;
+            if (input.down('D')) move = move + r;
+            bool wantJump = input.down(VK_SPACE);
+
+            // grab targets: points in front of pelvis at chest height
+            Vec3 pelvis = player.pelvisPos();
+            Vec3 lookF{ sinf(chaseCam.yaw), 0.f, cosf(chaseCam.yaw) };
+            Vec3 grabPtL = pelvis + lookF * 0.9f + Vec3{-0.35f, 0.35f, 0};
+            Vec3 grabPtR = pelvis + lookF * 0.9f + Vec3{ 0.35f, 0.35f, 0};
+            bool grabL = input.mouseButtons[0];
+            bool grabR = input.mouseButtons[1];
+
+            player.control(move, wantJump, grabL, grabR, grabPtL, grabPtR);
+
             phys.step((float)kFixedDt);
+            player.simulate((float)kFixedDt);
             acc -= kFixedDt; simTime += kFixedDt; ++steps;
         }
 
-        static Camera cam;
-        cam.yaw = (float)simTime * 0.15f;
-        cam.pitch = 0.42f;
-        cam.pos = Vec3{ sinf(cam.yaw), 0.f, cosf(cam.yaw) } * -170.f + Vec3{0, 70.f, 0};
+        // ---- chase camera
+        Vec3 target = player.pelvisPos();
+        chaseCam.yaw += input.mouseDX * 0.003f;
+        chaseCam.pitch = std::max(-1.2f, std::min(1.35f, chaseCam.pitch + input.mouseDY * 0.003f));
+        Vec3 back{ -sinf(chaseCam.yaw)*cosf(chaseCam.pitch), sinf(chaseCam.pitch),
+                    -cosf(chaseCam.yaw)*cosf(chaseCam.pitch) };
+        Vec3 camWant = target + back * 6.5f + Vec3{0, 1.6f, 0};
+        float groundClear = hf.heightAt(camWant.x, camWant.z) + 0.8f;
+        if (camWant.y < groundClear) camWant.y = groundClear;
+        chaseCam.pos = camWant;
 
         float vp[16];
-        cam.viewProj(vp, aspect);
+        chaseCam.viewProj(vp, aspect);
 
         ID3D11DeviceContext* ctx = gfx.ctx();
         ctx->UpdateSubresource(cbFrame, 0, nullptr, vp, 0, 0);
@@ -123,37 +160,46 @@ int main(int argc, char** argv) {
         ctx->IASetInputLayout(il);
         ctx->VSSetShader(vs, nullptr, 0);
         ctx->PSSetShader(ps, nullptr, 0);
-        ctx->VSSetConstantBuffers(0, 1, &cbFrame);
-        ctx->VSSetConstantBuffers(1, 1, &cbObj);
+        ID3D11Buffer* cbsAll[3] = { cbFrame, cbObj, cbTint };
+        ctx->VSSetConstantBuffers(0, 3, cbsAll);
 
         ctx->UpdateSubresource(cbObj, 0, nullptr, identity, 0, 0);
+        ctx->UpdateSubresource(cbTint, 0, nullptr, whiteTint, 0, 0);
         mountain.draw(ctx);
 
+        // crates: brownish
         for (auto& b : phys.boxes_) {
             float c = cosf(b.yaw), s = sinf(b.yaw);
-            float w[16] = {
-                 c, 0, s, 0,
-                 0, 1, 0, 0,
-                -s, 0, c, 0,
-                 b.pos.x, b.pos.y, b.pos.z, 1
-            };
-            // scale axes
-            for (int k = 0; k < 16; ++k) w[k] *= (k % 4 == 3) ? 1.f : 1.f;
-            w[0] *= b.hx*2; w[1] *= b.hx*2; w[2] *= b.hx*2;
-            w[4] *= b.hy*2; w[5] *= b.hy*2; w[6] *= b.hy*2;
-            w[8] *= b.hz*2; w[9] *= b.hz*2; w[10] *= b.hz*2;
-
+            float w[16] = { c,0,s,0,  0,1,0,0,  -s,0,c,0,  b.pos.x,b.pos.y,b.pos.z,1 };
+            w[0]*=b.hx*2; w[1]*=b.hx*2; w[2]*=b.hx*2;
+            w[4]*=b.hy*2; w[5]*=b.hy*2; w[6]*=b.hy*2;
+            w[8]*=b.hz*2; w[9]*=b.hz*2; w[10]*=b.hz*2;
             ctx->UpdateSubresource(cbObj, 0, nullptr, w, 0, 0);
-            crateMesh.draw(ctx);
+            float brown[4] = { 0.72f, 0.55f, 0.34f, 1 };
+            ctx->UpdateSubresource(cbTint, 0, nullptr, brown, 0, 0);
+            unitMesh.draw(ctx);
+        }
+        // player body parts
+        int np = player.collectParts(parts);
+        for (int i = 0; i < np; ++i) {
+            float w[16] = { 1,0,0,0,  0,1,0,0,  0,0,1,0,
+                            parts[i].center.x, parts[i].center.y, parts[i].center.z, 1 };
+            w[0] = parts[i].half.x*2;
+            w[5] = parts[i].half.y*2;
+            w[10] = parts[i].half.z*2;
+            ctx->UpdateSubresource(cbObj, 0, nullptr, w, 0, 0);
+            float col[4] = { parts[i].color.x, parts[i].color.y, parts[i].color.z, 1 };
+            ctx->UpdateSubresource(cbTint, 0, nullptr, col, 0, 0);
+            unitMesh.draw(ctx);
         }
         gfx.endFrame();
 
-        memcpy(prevKeys, input.keys, sizeof(prevKeys));
         input.endFrame();
         ++frame;
     }
 
-    crateMesh.shutdown(); mountain.shutdown(); gfx.shutdown();
+    player.shutdown(&phys);
+    unitMesh.shutdown(); mountain.shutdown(); gfx.shutdown();
     printf("clean exit after %llu frames\n", (unsigned long long)frame);
     return 0;
 }
