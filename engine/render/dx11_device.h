@@ -19,11 +19,15 @@ public:
 
 private:
     bool createBackbufferTargets();
+    bool createDepthTargets();
 
     ID3D11Device*        device_    = nullptr;
     ID3D11DeviceContext* ctx_       = nullptr;
     IDXGISwapChain*      swapchain_ = nullptr;
     ID3D11RenderTargetView* rtv_    = nullptr;
+    ID3D11Texture2D*        dsTex_  = nullptr;
+    ID3D11DepthStencilView* dsv_    = nullptr;
+    ID3D11DepthStencilState* dss_   = nullptr;
     int width_ = 0, height_ = 0;
 };
 
