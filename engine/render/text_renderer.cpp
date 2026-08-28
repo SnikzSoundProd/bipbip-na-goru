@@ -131,8 +131,8 @@ bool TextRenderer::init(ID3D11Device* device, int sw, int sh) {
                                          nullptr, &ps_))) return false;
 
     D3D11_INPUT_ELEMENT_DESC layout[] = {
-        { "POS", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "COL", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 8, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "POS", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "COL", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
     if (FAILED(device->CreateInputLayout(layout, 2, vsb->GetBufferPointer(),
                                          vsb->GetBufferSize(), &il_))) return false;

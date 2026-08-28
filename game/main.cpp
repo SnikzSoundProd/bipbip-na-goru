@@ -471,8 +471,10 @@ int main(int argc, char** argv) {
 
         // ---- chase camera
         Vec3 target = player.pelvisPos();
-        chaseCam.yaw += input.mouseDX * 0.003f;
-        chaseCam.pitch = std::max(-1.2f, std::min(1.35f, chaseCam.pitch + input.mouseDY * 0.003f));
+        if (!showMenu) {
+            chaseCam.yaw += input.mouseDX * 0.003f;
+            chaseCam.pitch = std::max(-1.2f, std::min(1.35f, chaseCam.pitch + input.mouseDY * 0.003f));
+        }
         Vec3 back{ -sinf(chaseCam.yaw)*cosf(chaseCam.pitch), sinf(chaseCam.pitch),
                     -cosf(chaseCam.yaw)*cosf(chaseCam.pitch) };
         Vec3 camWant = target + back * 6.5f + Vec3{0, 1.6f, 0};
