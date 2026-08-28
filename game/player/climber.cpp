@@ -89,10 +89,20 @@ void Climber::reconcilePelvis(const Vec3& authoritative, float blend) {
         respawn(authoritative);
         return;
     }
-    // Position-only correction. Do not inject a second velocity impulse into
-    // the predicted controller; that was the source of client-side jitter.
-    float k = std::max(0.f, std::min(1.f, blend));
-    pelvis_ = pelvis_ + d * k;
+    // Translate the WHOLE ragdoll in one frame. Moving only pelvis_ after
+    // phys.step() left the 13 verlet particles behind; their constraints then
+    // yanked it back on the next tick and made client physics visibly jitter.
+    Vec3 shift = d * std::max(0.f, std::min(1.f, blend));
+    const int ids[13] = { head_, shoulderL_, shoulderR_, elbowL_, elbowR_, handL_, handR_,
+                          hipL_, hipR_, kneeL_, kneeR_, footL_, footR_ };
+    for (int i = 0; i < 13; ++i) {
+        Particle& q = w_->particles_[ids[i]];
+        q.pos = q.pos + shift;
+        q.prev = q.prev + shift; // preserve velocity: this is a pure translation
+    }
+    pelvis_ = pelvis_ + shift;
+    stepL_.anchor = stepL_.anchor + shift; stepL_.from = stepL_.from + shift; stepL_.to = stepL_.to + shift;
+    stepR_.anchor = stepR_.anchor + shift; stepR_.from = stepR_.from + shift; stepR_.to = stepR_.to + shift;
 }
 
 void Climber::writePose(float pose[13][3]) const {
