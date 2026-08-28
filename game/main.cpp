@@ -110,6 +110,11 @@ int main(int argc, char** argv) {
     VerletWorld phys;
     phys.init(&hf);
 
+    // Separate VerletWorld for the remote player (puppet) so its particles
+    // never collide/share indices with the local climber.
+    VerletWorld physBuddy;
+    physBuddy.init(&hf);
+
     // crate mesh (tinted at draw time)
     auto boxVerts = geom::box(1.f, 1.f, 1.f);
     auto boxIdx = geom::boxIndices();
@@ -162,6 +167,7 @@ int main(int argc, char** argv) {
     bool buddyActive = false;
     double netTimer = 0.0;
     const double kNetRate = 1.0 / 20.0;
+    FILE* buddbg = nullptr;   // temp net-debug file handle (flush + close after use)
 
     // constant buffers
     struct CBPerFrame { float viewProj[16]; };
@@ -296,7 +302,9 @@ int main(int argc, char** argv) {
                     // host: apply remote input to buddy climber
                     if (netMode == NetMode::Host && net.haveRemoteInput) {
                         if (!buddyActive) {
-                            buddy.init(&phys, &hf, Vec3{3.f, hf.heightAt(3.f, 116.f), 116.f});
+                            buddbg = fopen("C:/Users/apex/AppData/Local/Temp/debug_net.txt", "a");
+                            if (buddbg) { fprintf(buddbg, "[host] haveRemoteInput -> spawn buddy\n"); fclose(buddbg); }
+                            buddy.init(&physBuddy, &hf, Vec3{3.f, hf.heightAt(3.f, 116.f), 116.f});
                             buddyActive = true;
                             fprintf(stderr, "[net] buddy spawned\n");
                         }
@@ -336,15 +344,20 @@ int main(int argc, char** argv) {
                     // client: apply received snapshot to buddy puppet directly
                     if (netMode == NetMode::Join && net.haveRemoteSnapshot) {
                         if (!buddyActive) {
-                            buddy.init(&phys, &hf, Vec3{3.f, hf.heightAt(3.f, 116.f), 116.f});
+                            buddbg = fopen("C:/Users/apex/AppData/Local/Temp/debug_net.txt", "a");
+                            if (buddbg) { fprintf(buddbg, "[join] haveRemoteSnapshot -> spawn buddy\n"); fclose(buddbg); }
+                            buddy.init(&physBuddy, &hf, Vec3{3.f, hf.heightAt(3.f, 116.f), 116.f});
                             buddyActive = true;
+                            fprintf(stderr, "[net] CLIENT buddy spawned\n");
                         }
                         auto& s = net.remoteSnapshot;
                         Vec3 target{s.px, s.py, s.pz};
-                        // hard-set with smoothing: lerp pelvis toward snapshot
+                        // smooth: lerp pelvis toward target at ~12/sec, then let
+                        // the verlet sim settle the limbs naturally (no snap).
                         Vec3 cur = buddy.pelvisPos();
-                        Vec3 np2 = cur + (target - cur) * 0.45f;
+                        Vec3 np2 = cur + (target - cur) * 0.18f;
                         buddy.teleportPelvis(np2);
+                        buddy.simulate((float)kFixedDt);   // docruchivaem konetchnosti fizikoy
                     }
                     // client: also feed remote HOST input? no — host is authoritative for itself.
                 }
@@ -485,6 +498,12 @@ int main(int argc, char** argv) {
              (netMode == NetMode::Host ? "HOST: waiting on :27015" : "JOINING..."));
         hud.draw(netStatus, 16.f, 94.f, 2.f, net.connected() || isSolo ? 0.4f : 1.f,
                  isSolo ? 0.7f : (net.connected() ? 1.f : 0.4f), 0.4f);
+        // buddy indicator (debug): shows if remote player is rendered
+        if (!isSolo) {
+            snprintf(buf, sizeof(buf), "BUDDY: %s", buddyActive ? "ON" : "off");
+            hud.draw(buf, 16.f, 114.f, 2.f, buddyActive ? 0.3f : 0.7f,
+                     buddyActive ? 1.f : 0.3f, 0.4f);
+        }
         if (run.exhausted)
             hud.draw("HANDS SLIP! REST!", 480.f, 60.f, 3.f, 1, 0.25f, 0.2f);
         if (run.finished) {

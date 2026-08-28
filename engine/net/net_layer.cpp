@@ -134,12 +134,17 @@ void NetLayer::pump() {
         uint8_t type = ((uint8_t*)m->m_pData)[0];
         const uint8_t* payload = (const uint8_t*)m->m_pData + 1;
         size_t avail = m->m_cbSize - 1;
+        FILE* dbg = nullptr;
         if (type == (uint8_t)net::MsgType::Input && avail >= sizeof(net::InputPacket)) {
             memcpy(&remoteInput, payload, sizeof(net::InputPacket));
             haveRemoteInput = true;
+            dbg = fopen("C:/Users/apex/AppData/Local/Temp/debug_net.txt", "a");
+            if (dbg) { fprintf(dbg, "[recv] Input seq=%u\n", (unsigned)remoteInput.seq); fclose(dbg); }
         } else if (type == (uint8_t)net::MsgType::Snapshot && avail >= sizeof(net::PlayerSnapshot)) {
             memcpy(&remoteSnapshot, payload, sizeof(net::PlayerSnapshot));
             haveRemoteSnapshot = true;
+            dbg = fopen("C:/Users/apex/AppData/Local/Temp/debug_net.txt", "a");
+            if (dbg) { fprintf(dbg, "[recv] Snapshot px=%.1f py=%.1f pz=%.1f\n", remoteSnapshot.px, remoteSnapshot.py, remoteSnapshot.pz); fclose(dbg); }
         } else if (type == (uint8_t)net::MsgType::Welcome && avail >= sizeof(net::WelcomePacket)) {
             memcpy(&welcome, payload, sizeof(net::WelcomePacket));
             welcomeReceived = true;
@@ -151,7 +156,7 @@ void NetLayer::pump() {
 static void sendTyped(HSteamNetConnection conn, uint8_t type,
                       const void* payload, size_t size) {
     if (conn == k_HSteamNetConnection_Invalid) return;
-    static uint8_t buf[sizeof(net::InputPacket) + 1]; // largest packet
+    uint8_t buf[64]; // > largest packet (Snapshot=29)+1; was sized to InputPacket -> overflow!
     buf[0] = type;
     memcpy(buf + 1, payload, size);
     SteamNetworkingSockets()->SendMessageToConnection(conn, buf, (uint32_t)size + 1,
