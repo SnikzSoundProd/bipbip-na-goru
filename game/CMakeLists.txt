@@ -4,6 +4,7 @@ add_executable(bipbip
     player/climber.cpp
     world/route.cpp
     gameplay/run.cpp
+    ui/menu_state.cpp
 )
 
 # repo root for "game/..." and engine dir for direct includes

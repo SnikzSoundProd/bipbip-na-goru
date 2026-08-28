@@ -13,6 +13,7 @@
 #include "game/gameplay/run.h"
 #include "render/text_renderer.h"
 #include "net/net_layer.h"
+#include "game/ui/menu_state.h"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -163,8 +164,14 @@ int main(int argc, char** argv) {
 
     // --- net + second player
     NetLayer net;
-    if (netMode == NetMode::Host && !net.host(net::kDefaultPort)) return 11;
-    if (netMode == NetMode::Join && !net.join(joinIp, net::kDefaultPort)) return 11;
+    // No CLI mode means a real menu: do not bind/connect until user confirms.
+    const bool cliLaunch = argc > 1;
+    ConnectionMenu menu;
+    bool showMenu = !cliLaunch;
+    if (!showMenu) {
+        if (netMode == NetMode::Host && !net.host(net::kDefaultPort)) return 11;
+        if (netMode == NetMode::Join && !net.join(joinIp, net::kDefaultPort)) return 11;
+    }
 
     Climber buddy;   // remote player: host simulates from client input,
                      // client renders interpolated snapshots
@@ -198,9 +205,35 @@ int main(int argc, char** argv) {
     Camera chaseCam;                       // yaw/pitch driven by mouse, pos by player
     chaseCam.pos = Vec3{0, 5, -90};
 
+    bool prevEnter = false, prevUp = false, prevDown = false, prevBack = false;
     while (!window.shouldClose()) {
         window.pumpMessages(input);
-        if (input.down(VK_ESCAPE)) break;
+        bool enterPressed = input.down(VK_RETURN) && !prevEnter;
+        bool upPressed = input.down(VK_UP) && !prevUp;
+        bool downPressed = input.down(VK_DOWN) && !prevDown;
+        bool backPressed = input.down(VK_BACK) && !prevBack;
+        if (showMenu) {
+            if (upPressed) menu.selected = (menu.selected + 3) % 4;
+            if (downPressed) menu.selected = (menu.selected + 1) % 4;
+            if (menu.state == MenuState::Join) {
+                if (backPressed) menu.eraseChar();
+                for (uint8_t ti = 0; ti < input.textCount; ++ti) menu.appendChar(input.text[ti]);
+            }
+            if (input.down(VK_ESCAPE) && menu.state != MenuState::Main) menu.back();
+            if (enterPressed) {
+                StartMode selectedMode{};
+                if (menu.activate(&selectedMode)) {
+                    showMenu = false;
+                    if (selectedMode == StartMode::Solo) { netMode = NetMode::Solo; isSolo = true; }
+                    else if (selectedMode == StartMode::Host) { netMode = NetMode::Host; isSolo = false; net.host(net::kDefaultPort); }
+                    else { netMode = NetMode::Join; isSolo = false; joinIp = menu.ip; net.join(joinIp, net::kDefaultPort); }
+                }
+            }
+            if (menu.state == MenuState::Quit) break;
+        }
+        prevEnter = input.down(VK_RETURN); prevUp = input.down(VK_UP);
+        prevDown = input.down(VK_DOWN); prevBack = input.down(VK_BACK);
+        if (input.down(VK_ESCAPE) && !showMenu) break;
 
         RECT rc; GetClientRect(window.handle(), &rc);
         if (rc.right > 0 && rc.bottom > 0) gfx.resize(rc.right, rc.bottom);
@@ -209,6 +242,7 @@ int main(int argc, char** argv) {
         acc += 1.0 / 60.0;
         int steps = 0;
         while (acc >= kFixedDt && steps < 4) {
+            if (showMenu) { acc = 0.0; break; } // menu pauses simulation
             // movement basis from camera yaw
             float cy = chaseCam.yaw;
             Vec3 f{ sinf(cy), 0, cosf(cy) };
@@ -534,6 +568,25 @@ int main(int argc, char** argv) {
         RECT rc2; GetClientRect(window.handle(), &rc2);
         hud.resize(rc2.right, rc2.bottom);
 
+        if (showMenu) {
+            const float x = 390.f, y = 170.f;
+            hud.draw("BIP BIP NA GORU", x, y, 5.f, 1.f, 0.82f, 0.15f);
+            hud.draw("UP/DOWN: SELECT   ENTER: CONFIRM", x, y + 70.f, 2.f, 0.82f, 0.86f, 0.95f);
+            const char* items[4] = { "SOLO", "HOST GAME", "JOIN BY IP", "QUIT" };
+            for (int mi = 0; mi < 4; ++mi) {
+                std::string line = (menu.selected == mi ? "> " : "  ") + std::string(items[mi]);
+                hud.draw(line, x, y + 110.f + mi * 32.f, 3.f,
+                         menu.selected == mi ? 0.25f : 0.85f,
+                         menu.selected == mi ? 1.f : 0.85f,
+                         menu.selected == mi ? 0.45f : 0.9f);
+            }
+            if (menu.state == MenuState::Join || menu.state == MenuState::Error) {
+                hud.draw("IP: " + menu.ip + "_", x, y + 255.f, 3.f, 1.f, 1.f, 1.f);
+                hud.draw("TYPE IPv4, BACKSPACE EDIT, ENTER JOIN, ESC BACK", x, y + 288.f, 2.f, 0.75f, 0.8f, 0.9f);
+            }
+            if (menu.state == MenuState::Error)
+                hud.draw(menu.error, x, y + 325.f, 2.f, 1.f, 0.25f, 0.25f);
+        } else {
         // stamina bar top-left
         hud.draw("STAMINA", 16.f, 14.f, 2.f, 1, 1, 1);
         {
@@ -577,6 +630,7 @@ int main(int argc, char** argv) {
                 player.respawn(run.respawn);
             }
         }
+        } // !showMenu: gameplay HUD
 
         gfx.endFrame();
 

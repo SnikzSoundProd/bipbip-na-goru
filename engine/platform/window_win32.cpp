@@ -64,6 +64,10 @@ LRESULT CALLBACK Window::wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (self->pumpingInput_) self->pumpingInput_->keys[wp & 0xFF] = true;
         if (msg == WM_SYSKEYDOWN && wp == VK_F4) return DefWindowProcW(h, msg, wp, lp);
         return 0;
+    case WM_CHAR:
+        if (self->pumpingInput_ && self->pumpingInput_->textCount < sizeof(self->pumpingInput_->text))
+            self->pumpingInput_->text[self->pumpingInput_->textCount++] = (char)wp;
+        return 0;
     case WM_KEYUP:
     case WM_SYSKEYUP:
         if (self->pumpingInput_) self->pumpingInput_->keys[wp & 0xFF] = false;
