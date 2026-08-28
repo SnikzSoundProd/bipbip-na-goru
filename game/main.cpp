@@ -134,7 +134,11 @@ int main(int argc, char** argv) {
 
     // the boi
     Climber player;
-    player.init(&phys, &hf, Vec3{0, 0, -80});
+    // Both peers start the client avatar at the same deterministic spawn.
+    // Host later confirms this position through reconciliation.
+    const Vec3 clientSpawn{2.f, hf.heightAt(2.f, -78.f), -78.f};
+    player.init(&phys, &hf, netMode == NetMode::Join ? clientSpawn
+                                                       : Vec3{0, 0, -80});
     Climber::PartBox parts[32];
 
     // --- gameplay: route + run state

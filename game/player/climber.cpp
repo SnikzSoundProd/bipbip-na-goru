@@ -83,10 +83,16 @@ void Climber::teleportPelvis(const Vec3& p) {
 
 void Climber::reconcilePelvis(const Vec3& authoritative, float blend) {
     Vec3 d = authoritative - pelvis_;
-    pelvis_ = pelvis_ + d * std::max(0.f, std::min(1.f, blend));
-    pelvisVel_.x += d.x * 8.f * blend;
-    pelvisVel_.y += d.y * 8.f * blend;
-    pelvisVel_.z += d.z * 8.f * blend;
+    float dist = length(d);
+    if (dist > 3.f) {
+        // Recovery from a real missed/late correction, not normal prediction.
+        respawn(authoritative);
+        return;
+    }
+    // Position-only correction. Do not inject a second velocity impulse into
+    // the predicted controller; that was the source of client-side jitter.
+    float k = std::max(0.f, std::min(1.f, blend));
+    pelvis_ = pelvis_ + d * k;
 }
 
 void Climber::writePose(float pose[13][3]) const {
