@@ -113,9 +113,9 @@ bool TextRenderer::init(ID3D11Device* device, int sw, int sh) {
     // shaders compiled from memory
     const char* vsSrc =
         "cbuffer CB : register(b0){ float4x4 proj; }"
-        "struct VI { float2 p : POS; float4 c : COL; };"
+        "struct VI { float3 p : POS; float4 c : COL; };"
         "struct VO { float4 pos : SV_POSITION; float4 c : COL; };"
-        "VO main(VI i){ VO o; o.pos = mul(proj, float4(i.p,0,1)); o.c = i.c; return o; }";
+        "VO main(VI i){ VO o; o.pos = mul(proj, float4(i.p,1)); o.c = i.c; return o; }";
     const char* psSrc =
         "struct PI { float4 pos : SV_POSITION; float4 c : COL; };"
         "float4 main(PI i) : SV_Target { return i.c; }";
@@ -158,11 +158,19 @@ bool TextRenderer::init(ID3D11Device* device, int sw, int sh) {
 
 void TextRenderer::updateProj() {
     float L = 0, R = (float)sw_, T = 0, B = (float)sh_;
+    // Column-vector ortho for HLSL mul(proj, v):
+    //   row0: {2/(R-L), 0,       0, -(R+L)/(R-L)}
+    //   row1: {0,       2/(T-B), 0, -(T+B)/(T-B)}
+    //   row2: {0,       0,       1,  0}
+    //   row3: {0,       0,       0,  1}
+    // Translation lives in column 3 so out.w is always 1.
+    // The old layout had translation in row 3 (row-vector convention),
+    // making out.w = -x+y+1 and clipping all text off-screen.
     float m[16] = {
-        2/(R-L), 0, 0, 0,
-        0, -2/(T-B), 0, 0,
-        0, 0, 1, 0,
-        -(R+L)/(R-L), -(T+B)/(T-B), 0, 1
+        2/(R-L), 0,       0, -(R+L)/(R-L),
+        0,       2/(T-B), 0, -(T+B)/(T-B),
+        0,       0,       1, 0,
+        0,       0,       0, 1
     };
     ctx_->UpdateSubresource(cb_, 0, nullptr, m, 0, 0);
 }
