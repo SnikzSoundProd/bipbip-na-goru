@@ -225,8 +225,19 @@ int main(int argc, char** argv) {
                 if (menu.activate(&selectedMode)) {
                     showMenu = false;
                     if (selectedMode == StartMode::Solo) { netMode = NetMode::Solo; isSolo = true; }
-                    else if (selectedMode == StartMode::Host) { netMode = NetMode::Host; isSolo = false; net.host(net::kDefaultPort); }
-                    else { netMode = NetMode::Join; isSolo = false; joinIp = menu.ip; net.join(joinIp, net::kDefaultPort); }
+                    else if (selectedMode == StartMode::Host) {
+                        netMode = NetMode::Host; isSolo = false;
+                        if (!net.host(net::kDefaultPort)) {
+                            menu.error = "HOST FAILED: PORT 27015 IS BUSY";
+                            menu.state = MenuState::Error; showMenu = true;
+                        }
+                    } else {
+                        netMode = NetMode::Join; isSolo = false; joinIp = menu.ip;
+                        if (!net.join(joinIp, net::kDefaultPort)) {
+                            menu.error = "JOIN FAILED: CONNECTION NOT STARTED";
+                            menu.state = MenuState::Error; showMenu = true;
+                        }
+                    }
                 }
             }
             if (menu.state == MenuState::Quit) break;
