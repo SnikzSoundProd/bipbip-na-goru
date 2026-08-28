@@ -34,9 +34,13 @@ struct PlayerSnapshot {
         float qx, qy, qz, qw;
         uint8_t owner;              // 0=host, 1=client
     } boxes[14];                    // host-authoritative shared crates
+    // Authoritative client state, sent by host for prediction reconciliation.
+    float clientPx, clientPy, clientPz;
+    float clientYaw;
+    uint32_t clientAckSeq;
     static constexpr uint8_t F_GRABL=1, F_GRABR=2, F_DONE=4;
 };
-static_assert(sizeof(PlayerSnapshot) == 591, "PlayerSnapshot size");
+static_assert(sizeof(PlayerSnapshot) == 611, "PlayerSnapshot size");
 
 // host tells client where to spawn / seed info at connect accept
 struct WelcomePacket {

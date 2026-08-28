@@ -81,6 +81,14 @@ void Climber::teleportPelvis(const Vec3& p) {
     respawn(p);
 }
 
+void Climber::reconcilePelvis(const Vec3& authoritative, float blend) {
+    Vec3 d = authoritative - pelvis_;
+    pelvis_ = pelvis_ + d * std::max(0.f, std::min(1.f, blend));
+    pelvisVel_.x += d.x * 8.f * blend;
+    pelvisVel_.y += d.y * 8.f * blend;
+    pelvisVel_.z += d.z * 8.f * blend;
+}
+
 void Climber::writePose(float pose[13][3]) const {
     const int ids[13] = { head_, shoulderL_, shoulderR_, elbowL_, elbowR_, handL_, handR_,
                           hipL_, hipR_, kneeL_, kneeR_, footL_, footR_ };

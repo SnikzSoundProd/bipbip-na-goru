@@ -35,6 +35,7 @@ public:
     bool grounded() const { return groundedTimer_ > 0; }
     void respawn(const Vec3& p);
     void teleportPelvis(const Vec3& p);   // legacy pelvis-only helper
+    void reconcilePelvis(const Vec3& authoritative, float blend);
     void applyPose(const float pose[13][3]); // apply complete network ragdoll pose
     void writePose(float pose[13][3]) const;
     // Authoritative body turn: rotate every ragdoll point around the pelvis.

@@ -166,6 +166,7 @@ int main(int argc, char** argv) {
                      // client renders interpolated snapshots
     bool buddyActive = false;
     double netTimer = 0.0;
+    uint32_t inputSeq = 0;
     const double kNetRate = 1.0 / 20.0;
     FILE* buddbg = nullptr;   // temp net-debug file handle (flush + close after use)
 
@@ -299,7 +300,7 @@ int main(int argc, char** argv) {
                     if (netMode == NetMode::Join && net.connected()) {
                         // client: send MY input, host simulates it
                         net::InputPacket ip;
-                        ip.seq++;
+                        ip.seq = ++inputSeq;
                         Vec3 mv = move;  // last computed
                         ip.moveX = mv.x; ip.moveZ = mv.z;
                         ip.buttons = (wantJump ? net::InputPacket::BTN_JUMP : 0)
@@ -318,6 +319,15 @@ int main(int argc, char** argv) {
                         snap.stamina = run.stamina;
                         snap.flags = 0;
                         player.writePose(snap.pose);
+                        if (buddyActive) {
+                            Vec3 cp = buddy.pelvisPos();
+                            snap.clientPx = cp.x; snap.clientPy = cp.y; snap.clientPz = cp.z;
+                            snap.clientYaw = net.remoteInput.camYaw;
+                            snap.clientAckSeq = net.remoteInput.seq;
+                        } else {
+                            snap.clientPx = snap.clientPy = snap.clientPz = 0.f;
+                            snap.clientYaw = 0.f; snap.clientAckSeq = 0;
+                        }
                         for (int bi = 0; bi < 14; ++bi) {
                             auto& b = snap.boxes[bi];
                             if (bi < (int)phys.boxes_.size()) {
@@ -334,11 +344,11 @@ int main(int argc, char** argv) {
                     }
 
                     // host: apply remote input to buddy climber
-                    if (netMode == NetMode::Host && net.haveRemoteSnapshot && !buddyActive) {
+                    if (netMode == NetMode::Host && net.haveRemoteInput && !buddyActive) {
                         // spawn the client puppet AT the client's real reported position
-                        Vec3 cp{net.remoteSnapshot.px, net.remoteSnapshot.py, net.remoteSnapshot.pz};
-                        if (fabsf(cp.x) + fabsf(cp.y) + fabsf(cp.z) < 0.01f)
-                            cp = Vec3{2.f, 0.f, -78.f};   // fallback near shared spawn
+                        Vec3 cp{2.f, hf.heightAt(2.f, -78.f), -78.f};
+                        // The client has not sent a transform; spawn both peers
+                        // from the deterministic shared start and reconcile later.
                         buddbg = fopen("C:/Users/apex/AppData/Local/Temp/debug_net.txt", "a");
                         if (buddbg) { fprintf(buddbg, "[host] spawn buddy at client pos %.1f %.1f %.1f\n", cp.x, cp.y, cp.z); fclose(buddbg); }
                         buddy.init(&physBuddy, &hf, cp);
@@ -365,16 +375,8 @@ int main(int argc, char** argv) {
                         buddy.control(rmv, rj, rl, rr, gL, gR);
                     }
 
-                    // client: send my pelvis too (host sees me), receive host pelvis
-                    if (netMode == NetMode::Join && net.connected()) {
-                        Vec3 mp = player.pelvisPos();
-                        net::PlayerSnapshot mine;
-                        mine.px = mp.x; mine.py = mp.y; mine.pz = mp.z;
-                        mine.stamina = run.stamina;
-                        net.sendSnapshot(mine);
-                    }
-                    // (no echo of the buddy puppet: it would overwrite the host
-                    //  pelvis snapshot on the client with alternating garbage)
+                    // Client sends input only. Player position is authoritative on host
+                    // and comes back in PlayerSnapshot below for reconciliation.
 
                     // client: apply received snapshot to buddy puppet directly
                     if (netMode == NetMode::Join && net.haveRemoteSnapshot) {
@@ -387,6 +389,14 @@ int main(int argc, char** argv) {
                             fprintf(stderr, "[net] CLIENT buddy spawned\n");
                         }
                         auto& s = net.remoteSnapshot;
+                        // Local prediction + reconciliation: keep responsiveness, but
+                        // remove accumulated drift against the host's buddy state.
+                        if (s.clientAckSeq != 0) {
+                            Vec3 auth{s.clientPx, s.clientPy, s.clientPz};
+                            Vec3 err = auth - player.pelvisPos();
+                            if (length(err) > 0.05f)
+                                player.reconcilePelvis(auth, length(err) > 2.0f ? 1.0f : 0.18f);
+                        }
                         buddy.applyPose(s.pose);
                         // Pose is already physically rotated on the host; do not
                         // rotate this puppet a second time.
