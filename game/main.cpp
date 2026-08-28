@@ -248,6 +248,20 @@ int main(int argc, char** argv) {
                 buddy.simulate((float)kFixedDt);
             }
 
+            // Shared-box ownership: the last player whose pelvis touches a box
+            // becomes its logical owner. The host still performs the single
+            // authoritative simulation; ownership prevents ambiguous handoff.
+            if (netMode == NetMode::Host) {
+                auto touchBox = [](const Vec3& p, const BoxProp& b) {
+                    float reach = std::max(b.hx, std::max(b.hy, b.hz)) + 0.65f;
+                    return length(p - b.pos) <= reach;
+                };
+                for (auto& b : phys.boxes_) {
+                    if (touchBox(player.pelvisPos(), b)) b.owner = 0;
+                    if (buddyActive && touchBox(buddy.pelvisPos(), b)) b.owner = 1;
+                }
+            }
+
             // gameplay tick
             Vec3 p2 = player.pelvisPos();
             bool hanging = grabL || grabR;
@@ -304,6 +318,18 @@ int main(int argc, char** argv) {
                         snap.stamina = run.stamina;
                         snap.flags = 0;
                         player.writePose(snap.pose);
+                        for (int bi = 0; bi < 14; ++bi) {
+                            auto& b = snap.boxes[bi];
+                            if (bi < (int)phys.boxes_.size()) {
+                                const auto& src = phys.boxes_[bi];
+                                b.px = src.pos.x; b.py = src.pos.y; b.pz = src.pos.z;
+                                b.qx = src.rot.x; b.qy = src.rot.y;
+                                b.qz = src.rot.z; b.qw = src.rot.w;
+                                b.owner = src.owner;
+                            } else {
+                                b = {};
+                            }
+                        }
                         net.sendSnapshot(snap);
                     }
 
@@ -365,6 +391,19 @@ int main(int argc, char** argv) {
                         // Pose is already physically rotated on the host; do not
                         // rotate this puppet a second time.
                         buddy.setRenderFacingYaw(s.vyaw);
+                        // Shared crates are host-authoritative: clients only
+                        // consume transforms and never run a second simulation.
+                        const int boxCount = std::min(14, (int)phys.boxes_.size());
+                        for (int bi = 0; bi < boxCount; ++bi) {
+                            auto& dst = phys.boxes_[bi];
+                            const auto& src = s.boxes[bi];
+                            dst.pos = Vec3{src.px, src.py, src.pz};
+                            dst.rot = Quat{src.qx, src.qy, src.qz, src.qw}.normalized();
+                            dst.vel = Vec3{};
+                            dst.angVel = Vec3{};
+                            dst.owner = src.owner;
+                            dst.sleeping = true;
+                        }
                     }
                     // client: also feed remote HOST input? no — host is authoritative for itself.
                 }

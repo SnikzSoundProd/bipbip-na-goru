@@ -31,6 +31,7 @@ struct BoxProp {
     Quat rot;            // orientation
     Vec3 angVel;         // world-space angular velocity
     float hx, hy, hz;    // half extents
+    uint8_t owner = 0;   // 0=host, 1=client; host still simulates authority
     bool sleeping = false;
     float sleepTimer = 0.f;
 };

@@ -107,9 +107,12 @@ static bool sphereOBB(const Vec3& sc, float r,
     float l[3] = { dot(d, ax[0]), dot(d, ax[1]), dot(d, ax[2]) };
     float c[3];
     for (int i = 0; i < 3; ++i) c[i] = std::max(-he[i], std::min(he[i], l[i]));
+    // Closest point on the OBB: local coordinates are clamped directly.
+    // The old (c - l) expression offset the point a second time by the
+    // sphere-to-box delta, so player-vs-box contacts were often missed.
     Vec3 closest = bc;
     for (int i = 0; i < 3; ++i)
-        closest = closest + ax[i] * (c[i] - l[i]);
+        closest = closest + ax[i] * c[i];
     Vec3 n = sc - closest;
     float dist2 = dot(n, n);
     if (dist2 > r*r) return false;
