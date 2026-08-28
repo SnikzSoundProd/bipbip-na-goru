@@ -77,6 +77,18 @@ void Climber::respawn(const Vec3& p) {
 
 Vec3 Climber::headPos() const { return w_->particlePos(head_); }
 
+void Climber::teleportPelvis(const Vec3& p) {
+    // net puppet: move pelvis, drag limb particles with it (keeps pose, no snap)
+    Vec3 delta = p - pelvis_;
+    pelvis_ = p;
+    pelvisVel_ = delta * 60.f;   // implied velocity for smooth continuation
+    for (int i = 0; i < 12; ++i) {   // our 12 particles were created first
+        Particle& q = w_->particles_[i];
+        q.pos = q.pos + delta;
+        q.prev = q.pos;
+    }
+}
+
 // pelvis is the "brain": we integrate it manually with crisp control,
 // then drag limb roots (hips/shoulders) toward it every step.
 void Climber::updateBalance(float dt) {

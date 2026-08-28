@@ -34,6 +34,7 @@ public:
     Vec3 headPos() const;
     bool grounded() const { return groundedTimer_ > 0; }
     void respawn(const Vec3& p);
+    void teleportPelvis(const Vec3& p);   // smooth net puppet move (keeps limbs)
 
     float staminaFrac(float stamina) const;   // for HUD (delegates nothing, helper)
 

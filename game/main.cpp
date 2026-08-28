@@ -12,23 +12,74 @@
 #include "game/world/route.h"
 #include "game/gameplay/run.h"
 #include "render/text_renderer.h"
+#include "net/net_layer.h"
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
+#include <windows.h>
+#include <io.h>   // _access for projectRoot() asset-path walk-up
 
 using namespace bip;
 
+// Resolve the project root so asset paths work no matter which folder the
+// user launches from. Strategy: dir of the exe, then walk up until we find
+// the "assets" folder (or hit a drive root).
+static std::string projectRoot() {
+    wchar_t buf[MAX_PATH] = {0};
+    DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    std::string cur;
+    if (n) {
+        int wlen = WideCharToMultiByte(CP_UTF8, 0, buf, (int)n, nullptr, 0, nullptr, nullptr);
+        std::string tmp(wlen, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, buf, (int)n, tmp.data(), wlen, nullptr, nullptr);
+        size_t pos = tmp.find_last_of("/\\");
+        cur = (pos != std::string::npos) ? tmp.substr(0, pos + 1) : "./";
+    } else {
+        cur = "./";
+    }
+    // walk up looking for /assets
+    for (int guard = 0; guard < 8; ++guard) {
+        std::string probe = cur + "assets";
+        // use stat via _access to test existence
+        if (_access(probe.c_str(), 0) == 0) return cur;
+        size_t sl = cur.find_last_of("/\\", cur.size() - 2);
+        if (sl == std::string::npos) break;
+        cur = cur.substr(0, sl + 1);
+    }
+    return cur;  // fallback: whatever we have
+}
+
 int main(int argc, char** argv) {
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
+    fprintf(stderr, "[boot] starting\n");
+
     uint64_t seed = (argc > 1) ? strtoull(argv[1], nullptr, 10) : 1337ull;
+    std::string assetRoot = projectRoot();   // walks up to the folder containing /assets
+    fprintf(stderr, "[boot] assetRoot=%s\n", assetRoot.c_str());
+
+    // net modes: bipbip [seed] --host | --join IP
+    enum class NetMode { Solo, Host, Join };
+    NetMode netMode = NetMode::Solo;
+    std::string joinIp = "127.0.0.1";
+    for (int i = 2; i < argc; ++i) {
+        if (!strcmp(argv[i], "--host")) netMode = NetMode::Host;
+        else if (!strcmp(argv[i], "--join") && i + 1 < argc) { netMode = NetMode::Join; joinIp = argv[++i]; }
+    }
+    bool isSolo = (netMode == NetMode::Solo);
 
     Window window;
+    fprintf(stderr, "[boot] creating window\n");
     if (!window.create("BIP BIP NA GORU", 1280, 720)) { fprintf(stderr, "window failed\n"); return 1; }
     Dx11Device gfx;
+    fprintf(stderr, "[boot] init d3d11\n");
     if (!gfx.init(window.handle(), 1280, 720)) { fprintf(stderr, "d3d11 failed\n"); return 2; }
 
     ShaderManager shaders;
     if (!shaders.init(gfx.device())) return 3;
+    fprintf(stderr, "[boot] loading shaders from %s\n", (assetRoot + "assets/shaders/basic_vs.hlsl").c_str());
 
     const D3D11_INPUT_ELEMENT_DESC layout[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Vertex,pos),    D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -38,10 +89,10 @@ int main(int argc, char** argv) {
     };
     ID3D11VertexShader* vs = nullptr; ID3D11InputLayout* il = nullptr; ID3D11PixelShader* ps = nullptr;
     std::string errs;
-    if (!shaders.loadVertexShader("assets/shaders/basic_vs.hlsl", "main", layout, 4, &vs, &il, &errs)) {
+    if (!shaders.loadVertexShader(assetRoot + "assets/shaders/basic_vs.hlsl", "main", layout, 4, &vs, &il, &errs)) {
         fprintf(stderr, "VS error:\n%s\n", errs.c_str()); return 4;
     }
-    if (!shaders.loadPixelShader("assets/shaders/basic_ps.hlsl", "main", &ps, &errs)) {
+    if (!shaders.loadPixelShader(assetRoot + "assets/shaders/basic_ps.hlsl", "main", &ps, &errs)) {
         fprintf(stderr, "PS error:\n%s\n", errs.c_str()); return 5;
     }
 
@@ -100,6 +151,17 @@ int main(int argc, char** argv) {
 
     TextRenderer hud;
     if (!hud.init(gfx.device(), 1280, 720)) return 10;
+
+    // --- net + second player
+    NetLayer net;
+    if (netMode == NetMode::Host && !net.host(net::kDefaultPort)) return 11;
+    if (netMode == NetMode::Join && !net.join(joinIp, net::kDefaultPort)) return 11;
+
+    Climber buddy;   // remote player: host simulates from client input,
+                     // client renders interpolated snapshots
+    bool buddyActive = false;
+    double netTimer = 0.0;
+    const double kNetRate = 1.0 / 20.0;
 
     // constant buffers
     struct CBPerFrame { float viewProj[16]; };
@@ -170,6 +232,8 @@ int main(int argc, char** argv) {
 
             phys.step((float)kFixedDt);
             player.simulate((float)kFixedDt);
+            if (buddyActive && netMode == NetMode::Host)
+                buddy.simulate((float)kFixedDt);   // host-authoritative buddy
 
             // gameplay tick
             Vec3 p2 = player.pelvisPos();
@@ -197,6 +261,94 @@ int main(int argc, char** argv) {
             }
 
             acc -= kFixedDt; simTime += kFixedDt; ++steps;
+
+            // ---- networking (20Hz)
+            if (!isSolo) {
+                net.pump();
+                netTimer += kFixedDt;
+                if (netTimer >= kNetRate) {
+                    netTimer -= kNetRate;
+
+                    if (netMode == NetMode::Join && net.connected()) {
+                        // client: send MY input, host simulates it
+                        net::InputPacket ip;
+                        ip.seq++;
+                        Vec3 mv = move;  // last computed
+                        ip.moveX = mv.x; ip.moveZ = mv.z;
+                        ip.buttons = (wantJump ? net::InputPacket::BTN_JUMP : 0)
+                                   | (input.mouseButtons[0] ? net::InputPacket::BTN_GRABL : 0)
+                                   | (input.mouseButtons[1] ? net::InputPacket::BTN_GRABR : 0);
+                        ip.camYaw = chaseCam.yaw;
+                        net.sendInput(ip);
+                    }
+                    if (netMode == NetMode::Host) {
+                        // host: send MY pelvis to client
+                        Vec3 mp = player.pelvisPos();
+                        net::PlayerSnapshot snap;
+                        snap.lastSeq++;
+                        snap.px = mp.x; snap.py = mp.y; snap.pz = mp.z;
+                        snap.vyaw = chaseCam.yaw;
+                        snap.stamina = run.stamina;
+                        snap.flags = 0;
+                        net.sendSnapshot(snap);
+                    }
+
+                    // host: apply remote input to buddy climber
+                    if (netMode == NetMode::Host && net.haveRemoteInput) {
+                        if (!buddyActive) {
+                            buddy.init(&phys, &hf, Vec3{3.f, hf.heightAt(3.f, 116.f), 116.f});
+                            buddyActive = true;
+                            fprintf(stderr, "[net] buddy spawned\n");
+                        }
+                        net::InputPacket& ri = net.remoteInput;
+                        Vec3 rmv{ ri.moveX, 0, ri.moveZ };
+                        bool rj = ri.buttons & net::InputPacket::BTN_JUMP;
+                        bool rl = ri.buttons & net::InputPacket::BTN_GRABL;
+                        bool rr = ri.buttons & net::InputPacket::BTN_GRABR;
+                        Vec3 bp = buddy.pelvisPos();
+                        Vec3 bf{ sinf(ri.camYaw), 0.f, cosf(ri.camYaw) };
+                        Vec3 gL = bp + bf * 0.9f + Vec3{-0.35f, 0.35f, 0};
+                        Vec3 gR = bp + bf * 0.9f + Vec3{ 0.35f, 0.35f, 0};
+                        int hIdx = route.nearest(bp + Vec3{0, 0.4f, 0}, 2.2f);
+                        if (hIdx >= 0 && (rl || rr)) {
+                            const Hold& hold = route.holds()[hIdx];
+                            if (rl) gL = hold.pos;
+                            if (rr) gR = hold.pos;
+                        }
+                        buddy.control(rmv, rj, rl, rr, gL, gR);
+                    }
+
+                    // client: send my pelvis too (host sees me), receive host pelvis
+                    if (netMode == NetMode::Join && net.connected()) {
+                        Vec3 mp = player.pelvisPos();
+                        net::PlayerSnapshot mine;
+                        mine.px = mp.x; mine.py = mp.y; mine.pz = mp.z;
+                        mine.stamina = run.stamina;
+                        net.sendSnapshot(mine);
+                    }
+                    if (netMode == NetMode::Host && buddyActive) {
+                        Vec3 bp2 = buddy.pelvisPos();
+                        net::PlayerSnapshot bs;
+                        bs.px = bp2.x; bs.py = bp2.y; bs.pz = bp2.z;
+                        net.sendSnapshot(bs);
+                    }
+
+                    // client: apply received snapshot to buddy puppet directly
+                    if (netMode == NetMode::Join && net.haveRemoteSnapshot) {
+                        if (!buddyActive) {
+                            buddy.init(&phys, &hf, Vec3{3.f, hf.heightAt(3.f, 116.f), 116.f});
+                            buddyActive = true;
+                        }
+                        auto& s = net.remoteSnapshot;
+                        Vec3 target{s.px, s.py, s.pz};
+                        // hard-set with smoothing: lerp pelvis toward snapshot
+                        Vec3 cur = buddy.pelvisPos();
+                        Vec3 np2 = cur + (target - cur) * 0.45f;
+                        buddy.teleportPelvis(np2);
+                    }
+                    // client: also feed remote HOST input? no — host is authoritative for itself.
+                }
+            }
         }
 
         // ---- chase camera
@@ -279,6 +431,32 @@ int main(int argc, char** argv) {
         }
 
         // HUD: stamina bar + timer + falls + win screen
+        // remote climber (different shirt so you don't confuse yourselves ахахах)
+        if (buddyActive) {
+            int bn = buddy.collectParts(parts);
+            for (int i = 0; i < bn; ++i) {
+                // recolor: swap shirt->teal
+                Vec3 c = parts[i].color;
+                bool isShirt = fabsf(c.x - 0.85f) < 0.02f && fabsf(c.y - 0.25f) < 0.03f;
+                Vec3 col = isShirt ? Vec3{0.2f, 0.75f, 0.7f} : c;
+                const auto& pb = parts[i];
+                Vec3 y = pb.yAxis;
+                Vec3 x = normalize(cross(y, pb.zHint));
+                Vec3 z = cross(x, y);
+                float sx = pb.half.x * 2.f, sy = pb.half.y * 2.f, sz = pb.half.z * 2.f;
+                float w[16] = {
+                    x.x*sx, x.y*sx, x.z*sx, 0,
+                    y.x*sy, y.y*sy, y.z*sy, 0,
+                    z.x*sz, z.y*sz, z.z*sz, 0,
+                    pb.center.x, pb.center.y, pb.center.z, 1
+                };
+                ctx->UpdateSubresource(cbObj, 0, nullptr, w, 0, 0);
+                float colr[4] = { col.x, col.y, col.z, 1 };
+                ctx->UpdateSubresource(cbTint, 0, nullptr, colr, 0, 0);
+                unitMesh.draw(ctx);
+            }
+        }
+
         gfx.beginUI();
         RECT rc2; GetClientRect(window.handle(), &rc2);
         hud.resize(rc2.right, rc2.bottom);
@@ -301,6 +479,12 @@ int main(int argc, char** argv) {
                  route.nearest(player.pelvisPos(), 2.5f) >= 0 ? "GRAB!" : "-",
                  (unsigned long long)seed);
         hud.draw(buf, 16.f, 74.f, 2.f, 0.85f, 0.85f, 0.9f);
+        // net status line
+        const char* netStatus = isSolo ? "SOLO" :
+            (net.connected() ? (netMode == NetMode::Host ? "HOST: peer connected" : "JOINED") :
+             (netMode == NetMode::Host ? "HOST: waiting on :27015" : "JOINING..."));
+        hud.draw(netStatus, 16.f, 94.f, 2.f, net.connected() || isSolo ? 0.4f : 1.f,
+                 isSolo ? 0.7f : (net.connected() ? 1.f : 0.4f), 0.4f);
         if (run.exhausted)
             hud.draw("HANDS SLIP! REST!", 480.f, 60.f, 3.f, 1, 0.25f, 0.2f);
         if (run.finished) {
@@ -322,7 +506,9 @@ int main(int argc, char** argv) {
     }
 
     player.shutdown(&phys);
-    unitMesh.shutdown(); mountain.shutdown(); gfx.shutdown();
+    if (buddyActive) buddy.shutdown(&phys);
+    net.shutdown();
+    unitMesh.shutdown(); mountain.shutdown(); gfx.shutdown(); holdMesh.shutdown();
     printf("clean exit after %llu frames\n", (unsigned long long)frame);
     return 0;
 }
