@@ -28,9 +28,10 @@ struct PlayerSnapshot {
     float    vyaw;                // facing yaw
     float    stamina;
     uint8_t  flags;               // bit0 grabbingL, bit1 grabbingR, bit2 finished
+    float    pose[13][3];          // complete ragdoll particle positions
     static constexpr uint8_t F_GRABL=1, F_GRABR=2, F_DONE=4;
 };
-static_assert(sizeof(PlayerSnapshot) == 29, "PlayerSnapshot size");
+static_assert(sizeof(PlayerSnapshot) == 185, "PlayerSnapshot size");
 
 // host tells client where to spawn / seed info at connect accept
 struct WelcomePacket {

@@ -34,7 +34,13 @@ public:
     Vec3 headPos() const;
     bool grounded() const { return groundedTimer_ > 0; }
     void respawn(const Vec3& p);
-    void teleportPelvis(const Vec3& p);   // smooth net puppet move (keeps limbs)
+    void teleportPelvis(const Vec3& p);   // legacy pelvis-only helper
+    void applyPose(const float pose[13][3]); // apply complete network ragdoll pose
+    void writePose(float pose[13][3]) const;
+    // Authoritative body turn: rotate every ragdoll point around the pelvis.
+    void setFacingYaw(float yaw);
+    // Render-only facing for a pose received from the network.
+    void setRenderFacingYaw(float yaw) { facingYaw_ = yaw; }
 
     float staminaFrac(float stamina) const;   // for HUD (delegates nothing, helper)
 
@@ -54,6 +60,7 @@ private:
     Vec3 pelvis_{};
     Vec3 pelvisVel_{};
     float yaw_ = 0.f;
+    float facingYaw_ = 0.f; // visual facing direction (camera yaw for network puppets)
 
     // limb particle indices in the verlet world
     int head_ = -1, shoulderL_ = -1, shoulderR_ = -1;

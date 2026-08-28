@@ -156,7 +156,8 @@ void NetLayer::pump() {
 static void sendTyped(HSteamNetConnection conn, uint8_t type,
                       const void* payload, size_t size) {
     if (conn == k_HSteamNetConnection_Invalid) return;
-    uint8_t buf[64]; // > largest packet (Snapshot=29)+1; was sized to InputPacket -> overflow!
+    uint8_t buf[sizeof(net::PlayerSnapshot) + 1]; // largest wire packet
+    if (size > sizeof(net::PlayerSnapshot)) return;
     buf[0] = type;
     memcpy(buf + 1, payload, size);
     SteamNetworkingSockets()->SendMessageToConnection(conn, buf, (uint32_t)size + 1,

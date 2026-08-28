@@ -234,12 +234,19 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // Camera determines where the local avatar faces, even while idle.
+            player.setFacingYaw(chaseCam.yaw);
             player.control(move, wantJump, grabL, grabR, grabPtL, grabPtR);
 
             phys.step((float)kFixedDt);
             player.simulate((float)kFixedDt);
-            if (buddyActive && netMode == NetMode::Host)
-                buddy.simulate((float)kFixedDt);   // host-authoritative buddy
+            if (buddyActive && netMode == NetMode::Host) {
+                // Buddy has its own particle pool and therefore needs its own
+                // Verlet step. Without this, the pelvis moves while limbs stay
+                // at the spawn pose and render as giant stretched beams.
+                physBuddy.step((float)kFixedDt);
+                buddy.simulate((float)kFixedDt);
+            }
 
             // gameplay tick
             Vec3 p2 = player.pelvisPos();
@@ -296,19 +303,25 @@ int main(int argc, char** argv) {
                         snap.vyaw = chaseCam.yaw;
                         snap.stamina = run.stamina;
                         snap.flags = 0;
+                        player.writePose(snap.pose);
                         net.sendSnapshot(snap);
                     }
 
                     // host: apply remote input to buddy climber
-                    if (netMode == NetMode::Host && net.haveRemoteInput) {
-                        if (!buddyActive) {
-                            buddbg = fopen("C:/Users/apex/AppData/Local/Temp/debug_net.txt", "a");
-                            if (buddbg) { fprintf(buddbg, "[host] haveRemoteInput -> spawn buddy\n"); fclose(buddbg); }
-                            buddy.init(&physBuddy, &hf, Vec3{3.f, hf.heightAt(3.f, 116.f), 116.f});
-                            buddyActive = true;
-                            fprintf(stderr, "[net] buddy spawned\n");
-                        }
+                    if (netMode == NetMode::Host && net.haveRemoteSnapshot && !buddyActive) {
+                        // spawn the client puppet AT the client's real reported position
+                        Vec3 cp{net.remoteSnapshot.px, net.remoteSnapshot.py, net.remoteSnapshot.pz};
+                        if (fabsf(cp.x) + fabsf(cp.y) + fabsf(cp.z) < 0.01f)
+                            cp = Vec3{2.f, 0.f, -78.f};   // fallback near shared spawn
+                        buddbg = fopen("C:/Users/apex/AppData/Local/Temp/debug_net.txt", "a");
+                        if (buddbg) { fprintf(buddbg, "[host] spawn buddy at client pos %.1f %.1f %.1f\n", cp.x, cp.y, cp.z); fclose(buddbg); }
+                        buddy.init(&physBuddy, &hf, cp);
+                        buddyActive = true;
+                        fprintf(stderr, "[net] buddy spawned\n");
+                    }
+                    if (netMode == NetMode::Host && buddyActive && net.haveRemoteInput) {
                         net::InputPacket& ri = net.remoteInput;
+                        buddy.setFacingYaw(ri.camYaw);
                         Vec3 rmv{ ri.moveX, 0, ri.moveZ };
                         bool rj = ri.buttons & net::InputPacket::BTN_JUMP;
                         bool rl = ri.buttons & net::InputPacket::BTN_GRABL;
@@ -334,30 +347,24 @@ int main(int argc, char** argv) {
                         mine.stamina = run.stamina;
                         net.sendSnapshot(mine);
                     }
-                    if (netMode == NetMode::Host && buddyActive) {
-                        Vec3 bp2 = buddy.pelvisPos();
-                        net::PlayerSnapshot bs;
-                        bs.px = bp2.x; bs.py = bp2.y; bs.pz = bp2.z;
-                        net.sendSnapshot(bs);
-                    }
+                    // (no echo of the buddy puppet: it would overwrite the host
+                    //  pelvis snapshot on the client with alternating garbage)
 
                     // client: apply received snapshot to buddy puppet directly
                     if (netMode == NetMode::Join && net.haveRemoteSnapshot) {
                         if (!buddyActive) {
+                            Vec3 sp{net.remoteSnapshot.px, net.remoteSnapshot.py, net.remoteSnapshot.pz};
                             buddbg = fopen("C:/Users/apex/AppData/Local/Temp/debug_net.txt", "a");
-                            if (buddbg) { fprintf(buddbg, "[join] haveRemoteSnapshot -> spawn buddy\n"); fclose(buddbg); }
-                            buddy.init(&physBuddy, &hf, Vec3{3.f, hf.heightAt(3.f, 116.f), 116.f});
+                            if (buddbg) { fprintf(buddbg, "[join] spawn buddy at host pos %.1f %.1f %.1f\n", sp.x, sp.y, sp.z); fclose(buddbg); }
+                            buddy.init(&physBuddy, &hf, sp);
                             buddyActive = true;
                             fprintf(stderr, "[net] CLIENT buddy spawned\n");
                         }
                         auto& s = net.remoteSnapshot;
-                        Vec3 target{s.px, s.py, s.pz};
-                        // smooth: lerp pelvis toward target at ~12/sec, then let
-                        // the verlet sim settle the limbs naturally (no snap).
-                        Vec3 cur = buddy.pelvisPos();
-                        Vec3 np2 = cur + (target - cur) * 0.18f;
-                        buddy.teleportPelvis(np2);
-                        buddy.simulate((float)kFixedDt);   // docruchivaem konetchnosti fizikoy
+                        buddy.applyPose(s.pose);
+                        // Pose is already physically rotated on the host; do not
+                        // rotate this puppet a second time.
+                        buddy.setRenderFacingYaw(s.vyaw);
                     }
                     // client: also feed remote HOST input? no — host is authoritative for itself.
                 }

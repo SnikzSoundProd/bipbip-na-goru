@@ -78,15 +78,52 @@ void Climber::respawn(const Vec3& p) {
 Vec3 Climber::headPos() const { return w_->particlePos(head_); }
 
 void Climber::teleportPelvis(const Vec3& p) {
-    // net puppet: move pelvis, drag limb particles with it (keeps pose, no snap)
-    Vec3 delta = p - pelvis_;
-    pelvis_ = p;
-    pelvisVel_ = delta * 60.f;   // implied velocity for smooth continuation
-    for (int i = 0; i < 12; ++i) {   // our 12 particles were created first
-        Particle& q = w_->particles_[i];
-        q.pos = q.pos + delta;
-        q.prev = q.pos;
+    respawn(p);
+}
+
+void Climber::writePose(float pose[13][3]) const {
+    const int ids[13] = { head_, shoulderL_, shoulderR_, elbowL_, elbowR_, handL_, handR_,
+                          hipL_, hipR_, kneeL_, kneeR_, footL_, footR_ };
+    for (int i = 0; i < 13; ++i) {
+        const Vec3 p = w_->particlePos(ids[i]);
+        pose[i][0] = p.x; pose[i][1] = p.y; pose[i][2] = p.z;
     }
+}
+
+void Climber::applyPose(const float pose[13][3]) {
+    const int ids[13] = { head_, shoulderL_, shoulderR_, elbowL_, elbowR_, handL_, handR_,
+                          hipL_, hipR_, kneeL_, kneeR_, footL_, footR_ };
+    for (int i = 0; i < 13; ++i) {
+        Particle& q = w_->particles_[ids[i]];
+        q.pos = Vec3{pose[i][0], pose[i][1], pose[i][2]};
+        q.prev = q.pos; // render-only puppet: no inherited Verlet velocity
+    }
+    pelvis_ = (w_->particlePos(hipL_) + w_->particlePos(hipR_)) * 0.5f + Vec3{0, 0.05f, 0};
+    pelvisVel_ = Vec3{};
+}
+
+void Climber::setFacingYaw(float yaw) {
+    // Rotate the actual ragdoll, not merely the debug/render basis.  This is
+    // deliberately applied to pos and prev so Verlet does not inject a kick.
+    float delta = yaw - facingYaw_;
+    while (delta > 3.14159265f) delta -= 6.2831853f;
+    while (delta < -3.14159265f) delta += 6.2831853f;
+    if (fabsf(delta) < 1e-4f) { facingYaw_ = yaw; return; }
+
+    const int ids[13] = { head_, shoulderL_, shoulderR_, elbowL_, elbowR_, handL_, handR_,
+                          hipL_, hipR_, kneeL_, kneeR_, footL_, footR_ };
+    float c = cosf(delta), s = sinf(delta);
+    auto turn = [&](Vec3& p) {
+        Vec3 d = p - pelvis_;
+        p = pelvis_ + Vec3{d.x*c + d.z*s, d.y, -d.x*s + d.z*c};
+    };
+    for (int i = 0; i < 13; ++i) {
+        turn(w_->particles_[ids[i]].pos);
+        turn(w_->particles_[ids[i]].prev);
+    }
+    turn(stepL_.anchor); turn(stepL_.from); turn(stepL_.to);
+    turn(stepR_.anchor); turn(stepR_.from); turn(stepR_.to);
+    facingYaw_ = yaw;
 }
 
 // pelvis is the "brain": we integrate it manually with crisp control,
@@ -113,11 +150,19 @@ void Climber::updateBalance(float dt) {
         p.pos = p.pos + (want - p.pos) * k;
     };
     float k = std::min(1.f, 14.f * dt);
-    drag(hipL_, Vec3{-0.10f, -0.05f, 0}, k);
-    drag(hipR_, Vec3{ 0.10f, -0.05f, 0}, k);
-    drag(shoulderL_, Vec3{-0.16f, 0.44f, 0}, k*0.9f);
-    drag(shoulderR_, Vec3{ 0.16f, 0.44f, 0}, k*0.9f);
-    drag(head_, Vec3{0, 0.58f, 0}, k);
+    // The rig's local X is its shoulder/hip axis.  Rotate that axis with the
+    // camera-facing yaw; fixed world-X offsets were immediately undoing every
+    // setFacingYaw() turn and made the character walk sideways like a crab.
+    Vec3 right{ cosf(facingYaw_), 0.f, -sinf(facingYaw_) };
+    auto local = [&](float x, float y, float z = 0.f) {
+        Vec3 forward{ sinf(facingYaw_), 0.f, cosf(facingYaw_) };
+        return right * x + Vec3{0.f, y, 0.f} + forward * z;
+    };
+    drag(hipL_,      local(-0.10f, -0.05f), k);
+    drag(hipR_,      local( 0.10f, -0.05f), k);
+    drag(shoulderL_, local(-0.16f,  0.44f), k*0.9f);
+    drag(shoulderR_, local( 0.16f,  0.44f), k*0.9f);
+    drag(head_,      local( 0.00f,  0.58f), k);
 }
 
 void Climber::applyMovement(const Vec3& moveDir, bool wantJump, float dt) {
@@ -282,7 +327,9 @@ int Climber::collectParts(PartBox* out) const {
     Vec3 shMid = (shL + shR) * 0.5f;
     Vec3 hipMid = (hipL + hipR) * 0.5f;
     float torsoLen = length(shMid - hipMid) + 0.10f;
-    Vec3 faceDir = normalize(shR - shL);                       // left->right = forward hint
+    // Visual forward comes from camera-facing yaw, not shoulder separation.
+    // This keeps a network puppet looking where its player is looking.
+    Vec3 faceDir{ sinf(facingYaw_), 0.f, cosf(facingYaw_) };
     add((shMid + hipMid) * 0.5f,
         Vec3{0.16f, torsoLen * 0.5f, 0.10f}, shirt,
         shMid - hipMid, faceDir);
@@ -291,6 +338,11 @@ int Climber::collectParts(PartBox* out) const {
     Vec3 headP = P(head_);
     add(headP, Vec3{0.115f, 0.115f, 0.115f}, skin,
         headP - shMid, faceDir);
+    // Direction marker: without a face/visor, rotating a symmetric cube is
+    // visually impossible to distinguish. This small front block makes the
+    // camera-facing direction unambiguous for local and network puppets.
+    add(headP + faceDir * 0.115f, Vec3{0.045f, 0.045f, 0.035f},
+        Vec3{0.08f, 0.08f, 0.10f}, Vec3{0,1,0}, faceDir);
 
     // --- limbs: boxes aligned to bones + joint cubes at knees/elbows/shoulders/hips/hands/feet
     auto seg = [&](int a, int b, Vec3 col, float thick) {
