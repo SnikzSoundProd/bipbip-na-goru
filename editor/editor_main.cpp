@@ -13,6 +13,7 @@
 #include "world/heightfield.h"
 #include "physics/verlet.h"
 #include "core/scene.h"
+#include "core/game_config.h"
 #include "pie_world.h"
 #include "camera_fly.h"
 
@@ -85,6 +86,10 @@ struct Editor {
     bool       selIsHold = false;
     std::string path;
     char statusMsg[256] = "";
+
+    // Shared tunables (same struct the game loads) so editor and game cannot drift.
+    GameConfig cfg;
+    std::string cfgPath;
 
     // viewport camera
     Camera cam;
@@ -235,6 +240,14 @@ int main(int argc, char** argv) {
 
     Editor ed;
     ed.path = scenePath;
+    ed.cfgPath = assetRoot + "assets/config/game.cfg";
+    // Load the SAME config file the game uses. Missing file = write defaults.
+    ed.cfg.reset();
+    if (!ed.cfg.load(ed.cfgPath)) {
+        CreateDirectoryA((assetRoot + "assets").c_str(), nullptr);
+        CreateDirectoryA((assetRoot + "assets/config").c_str(), nullptr);
+        ed.cfg.save(ed.cfgPath);
+    }
     if (!loadScene(scenePath, ed.scene)) {
         // no saved scene: author a sensible default so the editor is usable
         ed.scene = Scene{};
@@ -512,6 +525,63 @@ int main(int argc, char** argv) {
                 ed.pie.rebuildFromScene(ed.scene);
                 snprintf(ed.statusMsg, sizeof(ed.statusMsg), "Hot-applied to PIE (no restart needed)");
             }
+            ImGui::End();
+        }
+
+        // ---- Settings (shared GameConfig — same values the game loads) ----
+        ImGui::SetNextWindowPos(ImVec2(12, 464), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(300, 424), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Settings")) {
+            GameConfig& c = ed.cfg;
+            if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::DragFloat("chase distance", &c.camera.distance, 0.1f, 2.f, 40.f);
+                ImGui::DragFloat("height offset", &c.camera.height, 0.05f, -2.f, 8.f);
+                ImGui::DragFloat("pitch", &c.camera.pitch, 0.01f, -1.5f, 1.5f);
+                ImGui::DragFloat("fov Y", &c.camera.fovY, 0.01f, 0.3f, 2.5f);
+                ImGui::DragFloat("sensitivity", &c.camera.sensitivity, 0.0005f, 0.0001f, 0.02f, "%.4f");
+            }
+            if (ImGui::CollapsingHeader("Physics")) {
+                ImGui::SliderInt("max substeps", &c.physics.maxSubSteps, 1, 8);
+                ImGui::DragFloat("sleep linear", &c.physics.sleepLinear, 0.01f, 0.f, 3.f);
+                ImGui::DragFloat("sleep angular", &c.physics.sleepAngular, 0.01f, 0.f, 3.f);
+                ImGui::DragFloat("sleep delay (s)", &c.physics.sleepDelay, 0.01f, 0.f, 2.f);
+            }
+            if (ImGui::CollapsingHeader("Gameplay")) {
+                ImGui::DragFloat("grab reach", &c.gameplay.grabReach, 0.05f, 0.5f, 8.f);
+                ImGui::DragFloat("fall distance", &c.gameplay.fallDistance, 0.5f, 2.f, 60.f);
+                ImGui::DragFloat("grab stamina", &c.gameplay.grabStamina, 0.1f, 0.f, 20.f);
+                ImGui::SliderInt("stamina segments", &c.gameplay.staminaSegs, 4, 60);
+            }
+            if (ImGui::CollapsingHeader("Network")) {
+                int port = (int)c.network.port;
+                if (ImGui::InputInt("port", &port)) c.network.port = (uint16_t)std::max(1, std::min(65535, port));
+                float hz = (c.network.sendRate > 0) ? (float)(1.0 / c.network.sendRate) : 20.f;
+                if (ImGui::DragFloat("send rate (Hz)", &hz, 1.f, 5.f, 120.f))
+                    c.network.sendRate = 1.0 / std::max(1.f, hz);
+            }
+            if (ImGui::CollapsingHeader("HUD")) {
+                ImGui::DragFloat("hud x", &c.hud.x, 1.f, 0.f, 2000.f);
+                ImGui::DragFloat("hud y", &c.hud.y, 1.f, 0.f, 2000.f);
+                ImGui::DragFloat("hud scale", &c.hud.scale, 0.1f, 0.5f, 8.f);
+            }
+            if (ImGui::CollapsingHeader("World")) {
+                ImGui::DragScalar("seed", ImGuiDataType_U64, &c.world.seed, 1);
+                ImGui::DragFloat("world size", &c.world.worldSize, 1.f, 64.f, 1024.f);
+                ImGui::SliderInt("height resolution", &c.world.heightN, 64, 512);
+            }
+            ImGui::Separator();
+            if (ImGui::Button("Save Config")) {
+                if (ed.cfg.save(ed.cfgPath)) snprintf(ed.statusMsg, sizeof(ed.statusMsg), "Config saved");
+                else snprintf(ed.statusMsg, sizeof(ed.statusMsg), "Config save FAILED");
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reload")) {
+                if (ed.cfg.load(ed.cfgPath)) snprintf(ed.statusMsg, sizeof(ed.statusMsg), "Config reloaded");
+                else snprintf(ed.statusMsg, sizeof(ed.statusMsg), "Config reload FAILED");
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Defaults")) ed.cfg.reset();
+            ImGui::TextDisabled("Saved to assets/config/game.cfg");
             ImGui::End();
         }
 
