@@ -685,8 +685,9 @@ int main(int argc, char** argv) {
         if (showProfiler) {
             char pb[256];
             snprintf(pb, sizeof(pb),
-                "FPS %.0f   FRAME %.2f ms   DRAW CALLS %d   TRIS ~%d",
-                fps, frameMs, drawCalls, drawCalls * 36);
+                "FPS %.0f   FRAME %.2f ms   DRAW CALLS %d   TRIS ~%d   SLEEP %d/%d",
+                fps, frameMs, drawCalls, drawCalls * 36,
+                phys.sleepingBoxCount(), (int)phys.boxes_.size());
             hud.draw(pb, 16.f, rc2.bottom - 90.f, 2.f, 0.6f, 1.f, 0.6f);
             // net graph
             char nb[256];

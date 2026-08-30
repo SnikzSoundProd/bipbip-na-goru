@@ -249,6 +249,8 @@ Vec3 VerletWorld::collideSphereWithBox(const Vec3& posIn, float radius, int boxI
 }
 
 void VerletWorld::collideBoxesBoxes() {
+    // Fast path: nothing awake means no pairwise work at all.
+    if (sleepingBoxCount() == (int)boxes_.size()) return;
     for (size_t i = 0; i < boxes_.size(); ++i) {
         for (size_t j = i + 1; j < boxes_.size(); ++j) {
             BoxProp& A = boxes_[i];
@@ -301,6 +303,7 @@ void VerletWorld::integrateBoxes(float dt) {
 void VerletWorld::collideBoxesTerrain() {
     if (!hf_) return;
     for (auto& b : boxes_) {
+        if (b.sleeping) continue;   // asleep: skip 8-corner heightfield tests
         Vec3 ax[3]; boxAxes(b.rot, ax);
         float he[3] = { b.hx, b.hy, b.hz };
 
@@ -355,6 +358,16 @@ void VerletWorld::collideBoxesTerrain() {
             const float kSlop = 0.02f;
             float over = maxPen - kSlop;
             if (over > 0.f) b.pos.y += over * 0.35f;
+
+            // Resting damping. The positional lift above injects energy that
+            // shows up as endless spin (angVel measured oscillating 0.3..0.9
+            // forever on a box that is visually at rest), which keeps waking
+            // the sleep timer. Bleed it off — but only at low speed, so boxes
+            // genuinely rolling/tumbling down slopes are untouched.
+            if (length(b.vel) < 1.0f && length(b.angVel) < 1.5f) {
+                b.vel    = b.vel    * 0.92f;
+                b.angVel = b.angVel * 0.85f;
+            }
 
             // sleep: slow body on ground freezes solid (no more trembling)
             if (length(b.vel) < 0.30f && length(b.angVel) < 0.40f) {

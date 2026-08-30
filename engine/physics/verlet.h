@@ -55,6 +55,13 @@ public:
 
     void wake(BoxProp& b);
 
+    // how many boxes are currently asleep (for the profiler)
+    int sleepingBoxCount() const {
+        int n = 0;
+        for (const auto& b : boxes_) if (b.sleeping) ++n;
+        return n;
+    }
+
     // particle <-> rigid coupling helpers for the ragdoll later:
     void setParticlePinned(int i, bool pinned);
     Vec3 particlePos(int i) const { return particles_[i].pos; }
