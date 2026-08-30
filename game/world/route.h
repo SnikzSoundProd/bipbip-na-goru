@@ -17,6 +17,10 @@ class Route {
 public:
     void generate(const HeightField& hf, uint64_t seed);
 
+    // Build the hold list from an authored scene instead of generating it.
+    // Lets the editor place/checkpoint holds and have the runtime honour them.
+    void buildFromScene(const std::vector<Hold>& authored, const HeightField& hf);
+
     const std::vector<Hold>& holds() const { return holds_; }
     const Vec3& summit() const { return summit_; }
     const Vec3& start() const { return start_; }

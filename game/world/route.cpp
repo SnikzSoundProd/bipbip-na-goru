@@ -51,6 +51,14 @@ void Route::generate(const HeightField& hf, uint64_t seed) {
     summit_.y = hf.heightAt(0.f, 0.f);
 }
 
+void Route::buildFromScene(const std::vector<Hold>& authored, const HeightField& hf) {
+    holds_ = authored;
+    const float ws = hf.worldSize();
+    start_ = Vec3{0.f, hf.heightAt(0.f, ws*0.5f - 12.f), ws*0.5f - 12.f};
+    summit_.y = hf.heightAt(0.f, 0.f);
+    summit_ = Vec3{0.f, hf.heightAt(0.f, 0.f) + 1.5f, 0.f};
+}
+
 int Route::nearest(const Vec3& p, float maxDist) const {
     int best = -1; float bd = maxDist * maxDist;
     for (size_t i = 0; i < holds_.size(); ++i) {

@@ -1,6 +1,8 @@
 build/
 out/
 tools/
+# Exception: build scripts in tools/ (portable cmake/ninja binaries stay ignored)
+!tools/*.cmake
 thirdparty/JoltPhysics/
 thirdparty/gns-build/
 thirdparty/GameNetworkingSockets*/

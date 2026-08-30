@@ -51,6 +51,12 @@ LRESULT CALLBACK Window::wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     }
     if (!self) return DefWindowProcW(h, msg, wp, lp);
 
+    // Editor hook: let ImGui see input first when installed (set by the
+    // editor via Window::setUiHook). The game leaves this null.
+    if (self->uiHook_) {
+        if (self->uiHook_(h, msg, wp, lp)) return true;
+    }
+
     switch (msg) {
     case WM_CLOSE:
         self->shouldClose_ = true;
@@ -67,6 +73,10 @@ LRESULT CALLBACK Window::wndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CHAR:
         if (self->pumpingInput_ && self->pumpingInput_->textCount < sizeof(self->pumpingInput_->text))
             self->pumpingInput_->text[self->pumpingInput_->textCount++] = (char)wp;
+        return 0;
+    case WM_MOUSEWHEEL:
+        if (self->pumpingInput_)
+            self->pumpingInput_->mouseWheel += (int16_t)HIWORD(wp) / 120; // one notch = 120
         return 0;
     case WM_KEYUP:
     case WM_SYSKEYUP:
