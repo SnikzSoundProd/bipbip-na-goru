@@ -6,6 +6,7 @@
 // This is why editing in Play mode never corrupts the saved level — a real
 // Unreal problem we fix by snapshotting at Play time.
 #include "core/scene.h"
+#include "platform/input.h"
 #include "world/heightfield.h"
 #include "physics/verlet.h"
 #include "game/player/climber.h"
@@ -21,7 +22,9 @@ class PIEWorld {
 public:
     bool start(const Scene& authored, ID3D11Device* device);
     void stop();
-    void step(float dt);            // one fixed physics step
+    // One fixed physics step. `input` drives WASD/jump/grab in Play mode, and
+    // `camYaw` orients movement + the avatar (same scheme as the real game).
+    void step(float dt, const InputState* input = nullptr, float camYaw = 0.f);
     void rebuildFromScene(const Scene& s);  // hot-apply scene edits mid-play
 
     bool active() const { return active_; }
@@ -34,6 +37,7 @@ public:
     bool          buddyActive = false;
     Route         route;
     RunState      run;
+    Gameplay      gp;
 
     // scene copy this PIE instance was launched from (Play-time snapshot)
     Scene         snapshot;

@@ -1,10 +1,14 @@
 # bipbip_editor.exe — Unreal-style level editor (separate, lightweight target).
 # Links the SAME engine + gameplay libs as the game, so the editor runs the
 # real simulation (no duplicated logic that can drift out of sync).
+set(BIPBIP_EDITOR_NAME "bipbip_editor" CACHE STRING "Output name for the editor exe")
+
 add_executable(bipbip_editor
     editor_main.cpp
     pie_world.cpp
 )
+
+set_target_properties(bipbip_editor PROPERTIES OUTPUT_NAME "${BIPBIP_EDITOR_NAME}")
 
 target_include_directories(bipbip_editor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 

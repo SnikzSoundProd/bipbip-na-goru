@@ -14,6 +14,7 @@
 #include "physics/verlet.h"
 #include "core/scene.h"
 #include "pie_world.h"
+#include "camera_fly.h"
 
 #include "imgui.h"
 #include "imgui_impl_win32.h"
@@ -88,6 +89,40 @@ struct Editor {
     // viewport camera
     Camera cam;
     bool   camOrbit = false;
+
+    // ---- smooth camera transitions (Unreal-style "fly to") ----
+    bool   camFollowPlayer = false; // Play mode: camera trails the player
+
+    // smooth camera transitions (shared, unit-tested implementation)
+    CameraFly camFly;
+
+    // begin a smooth flight to a world position
+    void flyTo(const Vec3& target, float yaw, float pitch) {
+        camFly.start(cam.pos, target, cam.yaw, yaw, cam.pitch, pitch);
+    }
+
+    // Frame an object: pull the camera to a comfortable distance from `pos`,
+    // keeping the current viewing direction (Unreal's "F" focus behaviour).
+    void focusOn(const Vec3& pos, float radius) {
+        Vec3 dir = cam.pos - pos;
+        float len = std::sqrt(dir.x*dir.x + dir.y*dir.y + dir.z*dir.z);
+        if (len < 0.001f) dir = Vec3{0.f, 0.35f, 1.f};
+        else              dir = dir * (1.f / len);
+        float dist = std::max(7.f, radius * 4.5f);
+        Vec3 dest = pos + dir * dist;
+        float yaw   = atan2f(-dir.x, -dir.z);
+        float pitch = asinf(std::max(-1.f, std::min(1.f, -dir.y)));
+        camFollowPlayer = false;
+        flyTo(dest, yaw, pitch);
+    }
+
+    void updateCamera(float dt) {
+        if (camFly.flying()) {
+            Vec3 p; float y, pt;
+            camFly.update(dt, &p, &y, &pt);
+            cam.pos = p; cam.yaw = y; cam.pitch = pt;
+        }
+    }
 };
 
 } // namespace
@@ -205,6 +240,40 @@ int main(int argc, char** argv) {
         // hidden. Free-floating windows are always visible; the user can drag
         // them into a dock layout which then persists in imgui.ini.
 
+        // View matrix + box list are needed by viewport picking, so compute
+        // them BEFORE the ImGui panels are built.
+        ed.updateCamera((float)kFixedDt);
+        if (ed.camFollowPlayer && ed.pie.active()) {
+            Vec3 target = ed.pie.player.pelvisPos();
+            Vec3 back{ -sinf(ed.cam.yaw)*cosf(ed.cam.pitch), sinf(ed.cam.pitch),
+                        -cosf(ed.cam.yaw)*cosf(ed.cam.pitch) };
+            Vec3 want = target + back * 6.5f + Vec3{0, 1.6f, 0};
+            float groundClear = ed.pie.hf.heightAt(want.x, want.z) + 0.8f;
+            if (want.y < groundClear) want.y = groundClear;
+            if (ed.camFly.flying()) ed.camFly.retarget(want);
+            else                    ed.cam.pos = want;
+        }
+
+        float aspect = (float)window.width() / (float)std::max(1, window.height());
+        float vp[16];
+        ed.cam.viewProj(vp, aspect);
+
+        // Boxes currently visible (PIE live boxes, or the authored scene boxes)
+        static std::vector<BoxProp> editBoxes;
+        editBoxes.clear();
+        const std::vector<BoxProp>* boxesForPick = nullptr;
+        if (ed.mode == EditorMode::Play) {
+            boxesForPick = &ed.pie.phys.boxes_;
+        } else {
+            for (const auto& sb : ed.scene.boxes) {
+                BoxProp b{};
+                b.pos = Vec3{sb.pos[0], sb.pos[1], sb.pos[2]};
+                b.hx = sb.half[0]; b.hy = sb.half[1]; b.hz = sb.half[2];
+                editBoxes.push_back(b);
+            }
+            boxesForPick = &editBoxes;
+        }
+
         // ---- Toolbar ----
         ImGui::SetNextWindowPos(ImVec2(324, 32), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(1020, 44), ImGuiCond_FirstUseEver);
@@ -222,17 +291,28 @@ int main(int argc, char** argv) {
             }
             bool playing = (ed.mode == EditorMode::Play);
             if (playing) {
-                if (ImGui::Button("| Stop")) { ed.pie.stop(); ed.mode = EditorMode::Edit; }
+                if (ImGui::Button("| Stop")) {
+                    ed.pie.stop();
+                    ed.mode = EditorMode::Edit;
+                    ed.camFollowPlayer = false;
+                }
             } else {
                 if (ImGui::Button("> Play")) {
                     ed.pie.start(ed.scene, gfx.device());
                     ed.mode = EditorMode::Play;
+                    // smoothly fly from the editor camera to the player, then
+                    // keep the camera trailing him (Unreal PIE behaviour)
+                    Vec3 p = ed.pie.player.pelvisPos();
+                    ed.flyTo(p, ed.cam.yaw, 0.32f);
+                    ed.camFollowPlayer = true;
                 }
             }
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.16f,0.75f,0.62f,1.f), playing ? "PLAYING (PIE)" : "EDIT");
             ImGui::SameLine();
             ImGui::Text("| %s", ed.statusMsg);
+            ImGui::SameLine();
+            ImGui::TextDisabled(playing ? "WASD move | SPACE jump | LMB/RMB grab" : "");
             ImGui::EndMainMenuBar();
         }
 
@@ -261,15 +341,27 @@ int main(int argc, char** argv) {
             ImGui::Text("Boxes (%zu)", ed.scene.boxes.size());
             for (size_t i = 0; i < ed.scene.boxes.size(); ++i) {
                 char lbl[64]; snprintf(lbl, sizeof(lbl), "Box %zu", i);
-                if (ImGui::Selectable(lbl, (!ed.selIsHold && ed.selected == (int)i))) {
+                bool isSel = (!ed.selIsHold && ed.selected == (int)i);
+                if (ImGui::Selectable(lbl, isSel)) {
                     ed.selected = (int)i; ed.selIsHold = false;
+                    // clicking the name in the outliner flies the camera to it
+                    const auto& sb = ed.scene.boxes[i];
+                    Vec3 p{sb.pos[0], sb.pos[1], sb.pos[2]};
+                    float r = sb.half[0] + sb.half[1] + sb.half[2];
+                    ed.focusOn(p, r);
+                    snprintf(ed.statusMsg, sizeof(ed.statusMsg), "Box %zu", i);
                 }
             }
             ImGui::Text("Holds (%zu)", ed.scene.holds.size());
             for (size_t i = 0; i < ed.scene.holds.size(); ++i) {
                 char lbl[64]; snprintf(lbl, sizeof(lbl), "Hold %zu%s", i, ed.scene.holds[i].checkpoint ? " [CP]" : "");
-                if (ImGui::Selectable(lbl, (ed.selIsHold && ed.selected == (int)i))) {
+                bool isSel = (ed.selIsHold && ed.selected == (int)i);
+                if (ImGui::Selectable(lbl, isSel)) {
                     ed.selected = (int)i; ed.selIsHold = true;
+                    const auto& sh = ed.scene.holds[i];
+                    Vec3 p{sh.pos[0], sh.pos[1], sh.pos[2]};
+                    ed.focusOn(p, 1.0f);
+                    snprintf(ed.statusMsg, sizeof(ed.statusMsg), "Hold %zu", i);
                 }
             }
             ImGui::End();
@@ -311,12 +403,96 @@ int main(int argc, char** argv) {
         ImGui::SetNextWindowPos(ImVec2(324, 32), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(1020, 715), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Viewport")) {
-            ImGui::Text("RMB-drag: orbit  |  wheel: zoom");
+            ImGui::Text("RMB-drag: orbit | wheel: zoom | LMB-click: select & fly to");
+
+            // ---- click-to-select (screen-space picking) ----
+            // Project each object into the viewport and pick the one closest to
+            // the mouse. Screen-space is more reliable than ray-AABB for the
+            // small cubes this editor deals with.
+            if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                ImVec2 cpos = ImGui::GetCursorScreenPos();
+                ImVec2 csz  = ImGui::GetContentRegionAvail();
+                ImVec2 mouse = ImGui::GetMousePos();
+                float best = 34.f * 34.f;   // 34px pick radius, squared
+                int bestBox = -1, bestHold = -1;
+
+                auto project = [&](const Vec3& wp, float& ox, float& oy, bool& infront) {
+                    float cx = vp[0]*wp.x + vp[4]*wp.y + vp[8]*wp.z  + vp[12];
+                    float cy = vp[1]*wp.x + vp[5]*wp.y + vp[9]*wp.z  + vp[13];
+                    float cw = vp[3]*wp.x + vp[7]*wp.y + vp[11]*wp.z + vp[15];
+                    infront = (cw > 0.0001f);
+                    if (!infront) return;
+                    float ndcX = cx / cw, ndcY = cy / cw;
+                    ox = cpos.x + (ndcX * 0.5f + 0.5f) * csz.x;
+                    oy = cpos.y + (-ndcY * 0.5f + 0.5f) * csz.y;
+                };
+
+                const auto& boxList = *boxesForPick;
+                for (size_t i = 0; i < boxList.size(); ++i) {
+                    float ox, oy; bool ok;
+                    project(boxList[i].pos, ox, oy, ok);
+                    if (!ok) continue;
+                    float dx = ox - mouse.x, dy = oy - mouse.y;
+                    float d2 = dx*dx + dy*dy;
+                    if (d2 < best) { best = d2; bestBox = (int)i; bestHold = -1; }
+                }
+                for (size_t i = 0; i < ed.scene.holds.size(); ++i) {
+                    Vec3 p{ ed.scene.holds[i].pos[0], ed.scene.holds[i].pos[1], ed.scene.holds[i].pos[2] };
+                    float ox, oy; bool ok;
+                    project(p, ox, oy, ok);
+                    if (!ok) continue;
+                    float dx = ox - mouse.x, dy = oy - mouse.y;
+                    float d2 = dx*dx + dy*dy;
+                    if (d2 < best) { best = d2; bestHold = (int)i; bestBox = -1; }
+                }
+
+                if (bestBox >= 0) {
+                    ed.selected = bestBox; ed.selIsHold = false;
+                    const BoxProp& b = boxList[(size_t)bestBox];
+                    // fly to a comfortable viewing distance from the object
+                    Vec3 dir = normalize(ed.cam.pos - b.pos);
+                    if (length(dir) < 0.001f) dir = Vec3{0, 0.3f, 1.f};
+                    float dist = std::max(6.f, (b.hx + b.hy + b.hz) * 4.f);
+                    Vec3 dest = b.pos + dir * dist;
+                    float yaw = atan2f(-dir.x, -dir.z);
+                    float pitch = asinf(std::max(-1.f, std::min(1.f, -dir.y)));
+                    ed.camFollowPlayer = false;
+                    ed.flyTo(dest, yaw, pitch);
+                    snprintf(ed.statusMsg, sizeof(ed.statusMsg), "Selected Box %d", bestBox);
+                } else if (bestHold >= 0) {
+                    ed.selected = bestHold; ed.selIsHold = true;
+                    Vec3 p{ ed.scene.holds[bestHold].pos[0],
+                            ed.scene.holds[bestHold].pos[1],
+                            ed.scene.holds[bestHold].pos[2] };
+                    Vec3 dir = normalize(ed.cam.pos - p);
+                    if (length(dir) < 0.001f) dir = Vec3{0, 0.3f, 1.f};
+                    Vec3 dest = p + dir * 8.f;
+                    float yaw = atan2f(-dir.x, -dir.z);
+                    float pitch = asinf(std::max(-1.f, std::min(1.f, -dir.y)));
+                    ed.camFollowPlayer = false;
+                    ed.flyTo(dest, yaw, pitch);
+                    snprintf(ed.statusMsg, sizeof(ed.statusMsg), "Selected Hold %d", bestHold);
+                }
+            }
             ImGui::End();
         }
 
-        // camera orbit (RMB) + zoom
-        if (input.mouseButtons[1]) {
+        // ---- camera: orbit (RMB) + zoom, or follow the player in PIE ----
+        const float dtFrame = (float)kFixedDt;
+        if (ed.camFollowPlayer && ed.pie.active()) {
+            // Play mode: trail behind the player, using the same chase scheme
+            // as the real game (back along the view direction + head offset).
+            Vec3 target = ed.pie.player.pelvisPos();
+            Vec3 back{ -sinf(ed.cam.yaw)*cosf(ed.cam.pitch), sinf(ed.cam.pitch),
+                        -cosf(ed.cam.yaw)*cosf(ed.cam.pitch) };
+            Vec3 want = target + back * 6.5f + Vec3{0, 1.6f, 0};
+            float groundClear = ed.pie.hf.heightAt(want.x, want.z) + 0.8f;
+            if (want.y < groundClear) want.y = groundClear;
+            // while the intro flight runs, feed the chase target into it;
+            // afterwards the camera tracks the player directly
+            if (ed.camFly.flying()) ed.camFly.retarget(want);
+            else                    ed.cam.pos = want;
+        } else if (input.mouseButtons[1]) {
             ed.cam.yaw   += input.mouseDX * 0.005f;
             ed.cam.pitch  = std::max(-1.3f, std::min(1.4f, ed.cam.pitch - input.mouseDY * 0.005f));
         }
@@ -324,19 +500,20 @@ int main(int argc, char** argv) {
             Vec3 fwd{ sinf(ed.cam.yaw)*cosf(ed.cam.pitch), -sinf(ed.cam.pitch), cosf(ed.cam.yaw)*cosf(ed.cam.pitch) };
             ed.cam.pos = ed.cam.pos + fwd * (float)input.mouseWheel * 3.f;
         }
+        // (camera follow + view matrix + box list are computed earlier, above
+        //  the ImGui panels, because viewport picking needs them)
 
-        // PIE stepping
+        // ---- PIE stepping (with input so WASD works in the editor) ----
         if (ed.mode == EditorMode::Play) {
             acc += kFixedDt;
             int guard = 0;
-            while (acc >= kFixedDt && guard++ < 4) { ed.pie.step((float)kFixedDt); acc -= kFixedDt; }
+            while (acc >= kFixedDt && guard++ < 4) {
+                ed.pie.step((float)kFixedDt, &input, ed.cam.yaw);
+                acc -= kFixedDt;
+            }
         }
 
-        // ---- render ----
-        float aspect = 1600.f / 900.f;
-        float vp[16];
-        ed.cam.viewProj(vp, aspect);
-
+        // ---- render (vp already computed above, before the UI panels) ----
         ID3D11DeviceContext* ctx = gfx.ctx();
         ctx->UpdateSubresource(cbFrame, 0, nullptr, vp, 0, 0);
 
@@ -354,21 +531,8 @@ int main(int argc, char** argv) {
         mountain.draw(ctx);
 
         // draw scene boxes (Edit) or live PIE boxes (Play)
-        const std::vector<BoxProp>* drawBoxes = nullptr;
-        std::vector<BoxProp> editBoxes;
-        if (ed.mode == EditorMode::Play) {
-            drawBoxes = &ed.pie.phys.boxes_;
-        } else {
-            for (const auto& sb : ed.scene.boxes) {
-                BoxProp b{};
-                b.pos = Vec3{sb.pos[0], sb.pos[1], sb.pos[2]};
-                b.hx = sb.half[0]; b.hy = sb.half[1]; b.hz = sb.half[2];
-                editBoxes.push_back(b);
-            }
-            drawBoxes = &editBoxes;
-        }
-        for (size_t i = 0; i < drawBoxes->size(); ++i) {
-            const BoxProp& b = (*drawBoxes)[i];
+        for (size_t i = 0; i < boxesForPick->size(); ++i) {
+            const BoxProp& b = (*boxesForPick)[i];
             Vec3 ax0 = rotate(b.rot, Vec3{1,0,0});
             Vec3 ax1 = rotate(b.rot, Vec3{0,1,0});
             Vec3 ax2 = rotate(b.rot, Vec3{0,0,1});
