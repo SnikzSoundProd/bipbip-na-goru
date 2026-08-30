@@ -20,6 +20,8 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include "core/scene.h"
+#include "core/game_config.h"
 #include <ctime>
 #include <windows.h>
 #include <io.h>   // _access for projectRoot() asset-path walk-up
@@ -63,6 +65,21 @@ int main(int argc, char** argv) {
     std::string assetRoot = projectRoot();   // walks up to the folder containing /assets
     fprintf(stderr, "[boot] assetRoot=%s\n", assetRoot.c_str());
 
+    // Tunables live in one place so the editor can expose them (and so the
+    // game and editor cannot drift apart). Missing file = built-in defaults,
+    // which are then written out so the user has something to edit.
+    GameConfig cfg;
+    cfg.reset();
+    if (!cfg.load(assetRoot + "assets/config/game.cfg")) {
+        // ensure the folder exists, then write defaults so there is a file to edit
+        CreateDirectoryA((assetRoot + "assets").c_str(), nullptr);
+        CreateDirectoryA((assetRoot + "assets/config").c_str(), nullptr);
+        cfg.save(assetRoot + "assets/config/game.cfg");
+        fprintf(stderr, "[boot] wrote default config\n");
+    }
+    seed = cfg.world.seed;   // config wins, CLI arg kept for quick overrides
+    if (argc > 1) seed = strtoull(argv[1], nullptr, 10);
+
     // net modes: bipbip [seed] --host | --join IP
     enum class NetMode { Solo, Host, Join };
     NetMode netMode = NetMode::Solo;
@@ -101,7 +118,7 @@ int main(int argc, char** argv) {
 
     // --- world ---------------------------------------------------------------
     HeightField hf;
-    hf.generate(seed, 300.f, 256);
+    hf.generate(seed, cfg.world.worldSize, cfg.world.heightN);
     Mesh mountain;
     {
         const auto& vv = hf.vertices();
@@ -171,8 +188,8 @@ int main(int argc, char** argv) {
     ConnectionMenu menu;
     bool showMenu = !cliLaunch;
     if (!showMenu) {
-        if (netMode == NetMode::Host && !net.host(net::kDefaultPort)) return 11;
-        if (netMode == NetMode::Join && !net.join(joinIp, net::kDefaultPort)) return 11;
+        if (netMode == NetMode::Host && !net.host(cfg.network.port)) return 11;
+        if (netMode == NetMode::Join && !net.join(joinIp, cfg.network.port)) return 11;
     }
 
     Climber buddy;   // remote player: host simulates from client input,
@@ -180,7 +197,7 @@ int main(int argc, char** argv) {
     bool buddyActive = false;
     double netTimer = 0.0;
     uint32_t inputSeq = 0;
-    const double kNetRate = 1.0 / 20.0;
+    const double kNetRate = cfg.network.sendRate;
     FILE* buddbg = nullptr;   // temp net-debug file handle (flush + close after use)
 
     // constant buffers
@@ -202,7 +219,7 @@ int main(int argc, char** argv) {
     InputState input;
     uint64_t frame = 0;
     double simTime = 0;
-    const double kFixedDt = 1.0 / 60.0;
+    const double kFixedDt = cfg.physics.fixedDt;
     double acc = 0;
     Camera chaseCam;                       // yaw/pitch driven by mouse, pos by player
     chaseCam.pos = Vec3{0, 5, -90};
@@ -238,13 +255,13 @@ int main(int argc, char** argv) {
                     if (selectedMode == StartMode::Solo) { netMode = NetMode::Solo; isSolo = true; }
                     else if (selectedMode == StartMode::Host) {
                         netMode = NetMode::Host; isSolo = false;
-                        if (!net.host(net::kDefaultPort)) {
+                        if (!net.host(cfg.network.port)) {
                             menu.error = "HOST FAILED: PORT 27015 IS BUSY";
                             menu.state = MenuState::Error; showMenu = true;
                         }
                     } else {
                         netMode = NetMode::Join; isSolo = false; joinIp = menu.ip;
-                        if (!net.join(joinIp, net::kDefaultPort)) {
+                        if (!net.join(joinIp, cfg.network.port)) {
                             menu.error = "JOIN FAILED: CONNECTION NOT STARTED";
                             menu.state = MenuState::Error; showMenu = true;
                         }
@@ -290,7 +307,7 @@ int main(int argc, char** argv) {
             bool grabL = input.mouseButtons[0] && !run.exhausted;
             bool grabR = input.mouseButtons[1] && !run.exhausted;
             if (grabL || grabR) {
-                int h = route.nearest(pelvis + Vec3{0, 0.4f, 0}, 2.2f);
+                int h = route.nearest(pelvis + Vec3{0, 0.4f, 0}, cfg.gameplay.grabReach);
                 if (h >= 0) {
                     const Hold& hold = route.holds()[h];
                     Vec3 d = hold.pos - pelvis;
@@ -346,7 +363,7 @@ int main(int argc, char** argv) {
             static Vec3 lastSafe = run.respawn;
             static float lastSafeY = run.respawn.y;
             if (player.grounded() && p2.y > gy - 0.5f) { lastSafe = p2; lastSafeY = p2.y; }
-            if (p2.y < lastSafeY - 14.f) {           // fell 14m below last safe spot
+            if (p2.y < lastSafeY - cfg.gameplay.fallDistance) {   // fell below last safe spot
                 Vec3 rp;
                 gp.onFall(run, &rp);
                 player.respawn(rp);
@@ -489,12 +506,14 @@ int main(int argc, char** argv) {
         // ---- chase camera
         Vec3 target = player.pelvisPos();
         if (!showMenu) {
-            chaseCam.yaw += input.mouseDX * 0.003f;
-            chaseCam.pitch = std::max(-1.2f, std::min(1.35f, chaseCam.pitch + input.mouseDY * 0.003f));
+            chaseCam.yaw += input.mouseDX * cfg.camera.sensitivity;
+            chaseCam.pitch = std::max(cfg.camera.pitchMin,
+                                      std::min(cfg.camera.pitchMax,
+                                               chaseCam.pitch + input.mouseDY * cfg.camera.sensitivity));
         }
         Vec3 back{ -sinf(chaseCam.yaw)*cosf(chaseCam.pitch), sinf(chaseCam.pitch),
                     -cosf(chaseCam.yaw)*cosf(chaseCam.pitch) };
-        Vec3 camWant = target + back * 6.5f + Vec3{0, 1.6f, 0};
+        Vec3 camWant = target + back * cfg.camera.distance + Vec3{0, cfg.camera.height, 0};
         float groundClear = hf.heightAt(camWant.x, camWant.z) + 0.8f;
         if (camWant.y < groundClear) camWant.y = groundClear;
         chaseCam.pos = camWant;
@@ -639,10 +658,9 @@ int main(int argc, char** argv) {
         // stamina bar top-left
         hud.draw("STAMINA", 16.f, 14.f, 2.f, 1, 1, 1);
         {
-            const int segs = 20;
-            int filled = (int)(run.stamina / 100.f * segs + 0.5f);
+            int filled = (int)(run.stamina / 100.f * cfg.gameplay.staminaSegs + 0.5f);
             std::string bar;
-            for (int i = 0; i < segs; ++i) bar += (i < filled) ? '#' : '.';
+            for (int i = 0; i < cfg.gameplay.staminaSegs; ++i) bar += (i < filled) ? '#' : '.';
             float cr = run.stamina > 40 ? 0.2f : 1.0f;
             float cg = run.stamina > 40 ? 0.85f : 0.25f;
             hud.draw(bar, 16.f, 32.f, 2.f, cr, cg, 0.2f);
