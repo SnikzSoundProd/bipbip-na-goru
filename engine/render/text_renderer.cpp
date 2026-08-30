@@ -158,19 +158,17 @@ bool TextRenderer::init(ID3D11Device* device, int sw, int sh) {
 
 void TextRenderer::updateProj() {
     float L = 0, R = (float)sw_, T = 0, B = (float)sh_;
-    // Column-vector ortho for HLSL mul(proj, v):
-    //   row0: {2/(R-L), 0,       0, -(R+L)/(R-L)}
-    //   row1: {0,       2/(T-B), 0, -(T+B)/(T-B)}
-    //   row2: {0,       0,       1,  0}
-    //   row3: {0,       0,       0,  1}
-    // Translation lives in column 3 so out.w is always 1.
-    // The old layout had translation in row 3 (row-vector convention),
-    // making out.w = -x+y+1 and clipping all text off-screen.
+    // HLSL mul(proj, v) reads the cbuffer COLUMN-MAJOR:
+    //   column0 = m[0..3], column1 = m[4..7], column2 = m[8..11], column3 = m[12..15]
+    // out = x*col0 + y*col1 + z*col2 + w*col3, so TRANSLATION must live in
+    // column3 (m[12], m[13]), NOT in a 4th row. The previous version put it in
+    // the 4th row, making out.w = -x+y+1 (e.g. -219 at the menu) and clipping
+    // all text into the lower-right corner. 2/(T-B) flips Y (screen y-down -> NDC y-up).
     float m[16] = {
-        2/(R-L), 0,       0, -(R+L)/(R-L),
-        0,       2/(T-B), 0, -(T+B)/(T-B),
+        2/(R-L), 0,       0, 0,
+        0,       2/(T-B), 0, 0,
         0,       0,       1, 0,
-        0,       0,       0, 1
+        -(R+L)/(R-L), -(T+B)/(T-B), 0, 1
     };
     ctx_->UpdateSubresource(cb_, 0, nullptr, m, 0, 0);
 }
