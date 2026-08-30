@@ -111,6 +111,12 @@ struct Editor {
         else              dir = dir * (1.f / len);
         float dist = std::max(7.f, radius * 4.5f);
         Vec3 dest = pos + dir * dist;
+        // Never fly underground: lift the camera above the terrain surface.
+        // Without this, focusing a low-lying object puts the camera inside the
+        // mountain and everything is occluded by rock.
+        const HeightField& hfRef = (pie.active() && mode == EditorMode::Play) ? pie.hf : editHf;
+        float ground = hfRef.heightAt(dest.x, dest.z);
+        if (dest.y < ground + 2.5f) dest.y = ground + 2.5f;
         float yaw   = atan2f(-dir.x, -dir.z);
         float pitch = asinf(std::max(-1.f, std::min(1.f, -dir.y)));
         camFollowPlayer = false;
@@ -697,6 +703,22 @@ int main(int argc, char** argv) {
         // UI overlay: depth OFF so ImGui always draws on top (same as the
         // game's beginUI() path for its HUD).
         gfx.beginUI();
+
+        // Player markers are drawn AFTER beginUI (depth OFF) so they stay
+        // visible even when the camera clips into the terrain — same idea as
+        // Unreal drawing editor gizmos on top of the world.
+        if (ed.mode == EditorMode::Play && ed.pie.active()) {
+            ctx->IASetInputLayout(il);
+            ctx->VSSetShader(vs, nullptr, 0);
+            ctx->PSSetShader(ps, nullptr, 0);
+            ID3D11Buffer* cbs2[3] = { cbFrame, cbObj, cbTint };
+            ctx->VSSetConstantBuffers(0, 3, cbs2);
+            drawPlayerMarker(ctx, cbObj, cbTint, unitMesh,
+                             ed.pie.player.pelvisPos(), false, (float)simClock);
+            if (ed.pie.buddyActive)
+                drawPlayerMarker(ctx, cbObj, cbTint, unitMesh,
+                                 ed.pie.buddy.pelvisPos(), true, (float)simClock);
+        }
 
         ImGui::Render();
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
