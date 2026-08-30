@@ -117,6 +117,14 @@ struct Editor {
         flyTo(dest, yaw, pitch);
     }
 
+    // Snap the camera onto the local player (who you control in PIE).
+    void focusPlayer() {
+        if (!pie.active()) return;
+        Vec3 p = pie.player.pelvisPos();
+        focusOn(p, 2.0f);
+        camFollowPlayer = true;
+    }
+
     void updateCamera(float dt) {
         if (camFly.flying()) {
             Vec3 p; float y, pt;
@@ -144,8 +152,10 @@ const std::vector<Hold>& authoredHolds(Editor& ed) {
 }
 
 // Draw a climber ragdoll (same part boxes the game renders).
+// `isBuddy` recolours the shirt teal; `highlight` boosts saturation so the
+// ~1.7m body stays visible against a 220m mountain in the editor viewport.
 void drawClimber(ID3D11DeviceContext* ctx, ID3D11Buffer* cbObj, ID3D11Buffer* cbTint,
-                 const Mesh& unitMesh, Climber& c, bool isBuddy) {
+                 const Mesh& unitMesh, Climber& c, bool isBuddy, bool highlight) {
     Climber::PartBox parts[64];
     int n = c.collectParts(parts);
     for (int i = 0; i < n; ++i) {
@@ -161,14 +171,34 @@ void drawClimber(ID3D11DeviceContext* ctx, ID3D11Buffer* cbObj, ID3D11Buffer* cb
             pb.center.x, pb.center.y, pb.center.z, 1
         };
         ctx->UpdateSubresource(cbObj, 0, nullptr, w, 0, 0);
-        // buddy wears teal so you can tell the two apart (as in the game)
         Vec3 col = pb.color;
         bool isShirt = fabsf(col.x - 0.85f) < 0.02f && fabsf(col.y - 0.25f) < 0.03f;
-        if (isBuddy && isShirt) col = Vec3{0.2f, 0.75f, 0.7f};
+        bool isPants = fabsf(col.x - 0.25f) < 0.02f && fabsf(col.z - 0.65f) < 0.02f;
+        if (isBuddy) {
+            if (isShirt) col = Vec3{0.10f, 0.95f, 0.85f};   // teal
+            if (isPants) col = Vec3{0.05f, 0.45f, 0.60f};
+        } else if (highlight) {
+            if (isShirt) col = Vec3{1.0f, 0.15f, 0.20f};    // bright red (local)
+            if (isPants) col = Vec3{0.15f, 0.25f, 0.95f};
+        }
         float colr[4] = { col.x, col.y, col.z, 1 };
         ctx->UpdateSubresource(cbTint, 0, nullptr, colr, 0, 0);
         unitMesh.draw(ctx);
     }
+}
+
+// Floating marker above a climber so you can always tell who you control,
+// even when the body is tiny against the mountain.
+void drawPlayerMarker(ID3D11DeviceContext* ctx, ID3D11Buffer* cbObj, ID3D11Buffer* cbTint,
+                      const Mesh& unitMesh, const Vec3& pelvis, bool isBuddy, float timeSec) {
+    float bob = sinf(timeSec * 3.f) * 0.08f;
+    float y = pelvis.y + 1.35f + bob;
+    float s = isBuddy ? 0.16f : 0.20f;
+    float w[16] = { s,0,0,0, 0,s,0,0, 0,0,s,0, pelvis.x, y, pelvis.z, 1 };
+    ctx->UpdateSubresource(cbObj, 0, nullptr, w, 0, 0);
+    float col[4] = { isBuddy ? 0.10f : 1.f, isBuddy ? 0.95f : 0.85f, isBuddy ? 0.85f : 0.10f, 1 };
+    ctx->UpdateSubresource(cbTint, 0, nullptr, col, 0, 0);
+    unitMesh.draw(ctx);
 }
 
 } // namespace
@@ -264,6 +294,7 @@ int main(int argc, char** argv) {
     InputState input;
     const double kFixedDt = 1.0 / 60.0;
     double acc = 0;
+    double simClock = 0;   // seconds, for marker animation
 
     while (!window.shouldClose()) {
         window.pumpMessages(input);
@@ -348,9 +379,8 @@ int main(int argc, char** argv) {
                     ed.mode = EditorMode::Play;
                     // smoothly fly from the editor camera to the player, then
                     // keep the camera trailing him (Unreal PIE behaviour)
-                    Vec3 p = ed.pie.player.pelvisPos();
-                    ed.flyTo(p, ed.cam.yaw, 0.32f);
                     ed.camFollowPlayer = true;
+                    ed.focusPlayer();   // flies in close so the body is visible
                 }
             }
             ImGui::SameLine();
@@ -358,7 +388,7 @@ int main(int argc, char** argv) {
             ImGui::SameLine();
             ImGui::Text("| %s", ed.statusMsg);
             ImGui::SameLine();
-            ImGui::TextDisabled(playing ? "WASD move | SPACE jump | LMB/RMB grab" : "");
+            ImGui::TextDisabled(playing ? "WASD move | SPACE jump | LMB/RMB grab | F: focus YOU (red marker)" : "");
             ImGui::EndMainMenuBar();
         }
 
@@ -472,6 +502,11 @@ int main(int argc, char** argv) {
         ImGui::SetNextWindowSize(ImVec2(1020, 715), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Viewport")) {
             ImGui::Text("RMB-drag: orbit | wheel: zoom | LMB-click: select & fly to");
+            if (ed.mode == EditorMode::Play) {
+                ImGui::TextColored(ImVec4(1.f, 0.85f, 0.1f, 1.f),
+                                   "YOU = red marker   |   BUDDY = teal marker");
+                if (ImGui::Button("Focus Player (F)")) ed.focusPlayer();
+            }
 
             // ---- click-to-select (screen-space picking) ----
             // Project each object into the viewport and pick the one closest to
@@ -546,6 +581,13 @@ int main(int argc, char** argv) {
         }
 
         // ---- camera: orbit (RMB) + zoom, or follow the player in PIE ----
+        // F: focus the local player (same as the Viewport button)
+        {
+            static bool prevF = false;
+            bool f = input.down('F');
+            if (f && !prevF && ed.mode == EditorMode::Play) ed.focusPlayer();
+            prevF = f;
+        }
         const float dtFrame = (float)kFixedDt;
         if (ed.camFollowPlayer && ed.pie.active()) {
             // Play mode: trail behind the player, using the same chase scheme
@@ -578,7 +620,10 @@ int main(int argc, char** argv) {
             while (acc >= kFixedDt && guard++ < 4) {
                 ed.pie.step((float)kFixedDt, &input, ed.cam.yaw);
                 acc -= kFixedDt;
+                simClock += kFixedDt;
             }
+        } else {
+            simClock += kFixedDt;   // keep markers animating in Edit mode too
         }
 
         // ---- render (vp already computed above, before the UI panels) ----
@@ -636,10 +681,17 @@ int main(int argc, char** argv) {
         }
 
         // ---- climbers (in Play mode): local player + remote buddy ----
+        // The body is only ~1.7m against a 220m mountain, so the local player
+        // is drawn with saturated colours plus a floating marker.
         if (ed.mode == EditorMode::Play && ed.pie.active()) {
-            drawClimber(ctx, cbObj, cbTint, unitMesh, ed.pie.player, false);
+            drawClimber(ctx, cbObj, cbTint, unitMesh, ed.pie.player, false, true);
             if (ed.pie.buddyActive)
-                drawClimber(ctx, cbObj, cbTint, unitMesh, ed.pie.buddy, true);
+                drawClimber(ctx, cbObj, cbTint, unitMesh, ed.pie.buddy, true, false);
+            drawPlayerMarker(ctx, cbObj, cbTint, unitMesh,
+                             ed.pie.player.pelvisPos(), false, (float)simClock);
+            if (ed.pie.buddyActive)
+                drawPlayerMarker(ctx, cbObj, cbTint, unitMesh,
+                                 ed.pie.buddy.pelvisPos(), true, (float)simClock);
         }
 
         // UI overlay: depth OFF so ImGui always draws on top (same as the
