@@ -89,6 +89,7 @@ struct Editor {
     // viewport camera
     Camera cam;
     bool   camOrbit = false;
+    HeightField editHf;        // Edit-mode terrain (for picking/drop-to-ground)
 
     // ---- smooth camera transitions (Unreal-style "fly to") ----
     bool   camFollowPlayer = false; // Play mode: camera trails the player
@@ -124,6 +125,51 @@ struct Editor {
         }
     }
 };
+
+// Holds as authored in the scene (Edit mode has no PIE route yet).
+const std::vector<Hold>& authoredHolds(Editor& ed) {
+    static std::vector<Hold> cache;
+    // rebuild only when the authored list changes size (cheap, avoids per-frame alloc)
+    if (cache.size() != ed.scene.holds.size()) {
+        cache.clear();
+        for (const auto& sh : ed.scene.holds)
+            cache.push_back(Hold{ Vec3{sh.pos[0], sh.pos[1], sh.pos[2]}, sh.checkpoint });
+    } else {
+        for (size_t i = 0; i < cache.size(); ++i) {
+            cache[i].pos = Vec3{ ed.scene.holds[i].pos[0], ed.scene.holds[i].pos[1], ed.scene.holds[i].pos[2] };
+            cache[i].checkpoint = ed.scene.holds[i].checkpoint;
+        }
+    }
+    return cache;
+}
+
+// Draw a climber ragdoll (same part boxes the game renders).
+void drawClimber(ID3D11DeviceContext* ctx, ID3D11Buffer* cbObj, ID3D11Buffer* cbTint,
+                 const Mesh& unitMesh, Climber& c, bool isBuddy) {
+    Climber::PartBox parts[64];
+    int n = c.collectParts(parts);
+    for (int i = 0; i < n; ++i) {
+        const auto& pb = parts[i];
+        Vec3 y = pb.yAxis;
+        Vec3 x = normalize(cross(y, pb.zHint));
+        Vec3 z = cross(x, y);
+        float sx = pb.half.x * 2.f, sy = pb.half.y * 2.f, sz = pb.half.z * 2.f;
+        float w[16] = {
+            x.x*sx, x.y*sx, x.z*sx, 0,
+            y.x*sy, y.y*sy, y.z*sy, 0,
+            z.x*sz, z.y*sz, z.z*sz, 0,
+            pb.center.x, pb.center.y, pb.center.z, 1
+        };
+        ctx->UpdateSubresource(cbObj, 0, nullptr, w, 0, 0);
+        // buddy wears teal so you can tell the two apart (as in the game)
+        Vec3 col = pb.color;
+        bool isShirt = fabsf(col.x - 0.85f) < 0.02f && fabsf(col.y - 0.25f) < 0.03f;
+        if (isBuddy && isShirt) col = Vec3{0.2f, 0.75f, 0.7f};
+        float colr[4] = { col.x, col.y, col.z, 1 };
+        ctx->UpdateSubresource(cbTint, 0, nullptr, colr, 0, 0);
+        unitMesh.draw(ctx);
+    }
+}
 
 } // namespace
 
@@ -190,15 +236,15 @@ int main(int argc, char** argv) {
 
     Mesh mountain, unitMesh;
     {
-        HeightField tmp; tmp.generate(ed.scene.seed, ed.scene.worldSize, ed.scene.heightN);
-        if (!mountain.init(gfx.device(), tmp.vertices().data(), (uint32_t)tmp.vertices().size(),
-                           tmp.indices().data(), (uint32_t)tmp.indices().size())) {
+        ed.editHf.generate(ed.scene.seed, ed.scene.worldSize, ed.scene.heightN);
+        if (!mountain.init(gfx.device(), ed.editHf.vertices().data(), (uint32_t)ed.editHf.vertices().size(),
+                           ed.editHf.indices().data(), (uint32_t)ed.editHf.indices().size())) {
             fprintf(stderr, "[editor] mountain mesh init FAILED (vtx=%zu idx=%zu)\n",
-                    tmp.vertices().size(), tmp.indices().size());
+                    ed.editHf.vertices().size(), ed.editHf.indices().size());
             return 6;
         }
         fprintf(stderr, "[editor] mountain mesh ok (vtx=%zu idx=%zu)\n",
-                tmp.vertices().size(), tmp.indices().size());
+                ed.editHf.vertices().size(), ed.editHf.indices().size());
     }
     {
         auto vv = geom::box(1.f, 1.f, 1.f);
@@ -392,6 +438,28 @@ int main(int argc, char** argv) {
                 ImGui::Text("Nothing selected");
             }
             ImGui::Separator();
+            // Snap the selected object onto the terrain surface. Without this
+            // authored Y values drift underground as the mountain changes.
+            bool canDrop = (ed.selected >= 0) &&
+                (ed.selIsHold ? (ed.selected < (int)ed.scene.holds.size())
+                              : (ed.selected < (int)ed.scene.boxes.size()));
+            if (canDrop) {
+                if (ImGui::Button("Drop to Ground")) {
+                    const HeightField& hfDrop = (ed.mode == EditorMode::Play && ed.pie.active())
+                                                ? ed.pie.hf : ed.editHf;
+                    if (!ed.selIsHold) {
+                        auto& b = ed.scene.boxes[(size_t)ed.selected];
+                        b.pos[1] = hfDrop.heightAt(b.pos[0], b.pos[2]) + b.half[1] + 0.05f;
+                        snprintf(ed.statusMsg, sizeof(ed.statusMsg), "Box %d dropped to ground", ed.selected);
+                    } else {
+                        auto& h = ed.scene.holds[(size_t)ed.selected];
+                        h.pos[1] = hfDrop.heightAt(h.pos[0], h.pos[2]) + 0.9f;
+                        snprintf(ed.statusMsg, sizeof(ed.statusMsg), "Hold %d dropped to ground", ed.selected);
+                    }
+                    if (ed.mode == EditorMode::Play) ed.pie.rebuildFromScene(ed.scene);
+                }
+                ImGui::SameLine();
+            }
             if (ImGui::Button("Apply to Running Game") && ed.mode == EditorMode::Play) {
                 ed.pie.rebuildFromScene(ed.scene);
                 snprintf(ed.statusMsg, sizeof(ed.statusMsg), "Hot-applied to PIE (no restart needed)");
@@ -548,6 +616,30 @@ int main(int argc, char** argv) {
             float col[4] = { sel ? 1.f : 0.72f, sel ? 0.85f : 0.55f, sel ? 0.3f : 0.34f, 1 };
             ctx->UpdateSubresource(cbTint, 0, nullptr, col, 0, 0);
             unitMesh.draw(ctx);
+        }
+
+        // ---- holds (orange cubes, bigger for checkpoints) ----
+        const auto& holds = (ed.mode == EditorMode::Play) ? ed.pie.route.holds()
+                                                          : authoredHolds(ed);
+        for (size_t i = 0; i < holds.size(); ++i) {
+            const Hold& h = holds[i];
+            float s = h.checkpoint ? 0.5f : 0.22f;
+            bool isSel = (ed.selIsHold && ed.selected == (int)i);
+            float tint[4] = { isSel ? 1.f : (h.checkpoint ? 0.95f : 0.95f),
+                              isSel ? 0.9f : (h.checkpoint ? 0.75f : 0.55f),
+                              isSel ? 0.3f : (h.checkpoint ? 0.10f : 0.15f), 1.f };
+            float hw[16] = { s,0,0,0, 0,s,0,0, 0,0,s,0,
+                             h.pos.x, h.pos.y, h.pos.z, 1 };
+            ctx->UpdateSubresource(cbObj, 0, nullptr, hw, 0, 0);
+            ctx->UpdateSubresource(cbTint, 0, nullptr, tint, 0, 0);
+            unitMesh.draw(ctx);
+        }
+
+        // ---- climbers (in Play mode): local player + remote buddy ----
+        if (ed.mode == EditorMode::Play && ed.pie.active()) {
+            drawClimber(ctx, cbObj, cbTint, unitMesh, ed.pie.player, false);
+            if (ed.pie.buddyActive)
+                drawClimber(ctx, cbObj, cbTint, unitMesh, ed.pie.buddy, true);
         }
 
         // UI overlay: depth OFF so ImGui always draws on top (same as the
