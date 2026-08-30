@@ -156,20 +156,29 @@ int main(int argc, char** argv) {
     Mesh mountain, unitMesh;
     {
         HeightField tmp; tmp.generate(ed.scene.seed, ed.scene.worldSize, ed.scene.heightN);
-        mountain.init(gfx.device(), tmp.vertices().data(), (uint32_t)tmp.vertices().size(),
-                      tmp.indices().data(), (uint32_t)tmp.indices().size());
+        if (!mountain.init(gfx.device(), tmp.vertices().data(), (uint32_t)tmp.vertices().size(),
+                           tmp.indices().data(), (uint32_t)tmp.indices().size())) {
+            fprintf(stderr, "[editor] mountain mesh init FAILED (vtx=%zu idx=%zu)\n",
+                    tmp.vertices().size(), tmp.indices().size());
+            return 6;
+        }
+        fprintf(stderr, "[editor] mountain mesh ok (vtx=%zu idx=%zu)\n",
+                tmp.vertices().size(), tmp.indices().size());
     }
     {
         auto vv = geom::box(1.f, 1.f, 1.f);
         auto ii = geom::boxIndices();
-        unitMesh.init(gfx.device(), vv.data(), (uint32_t)vv.size(), ii.data(), (uint32_t)ii.size());
+        if (!unitMesh.init(gfx.device(), vv.data(), (uint32_t)vv.size(), ii.data(), (uint32_t)ii.size())) {
+            fprintf(stderr, "[editor] unit mesh init FAILED\n");
+            return 7;
+        }
     }
 
     TextRenderer hud;
     hud.init(gfx.device(), 1600, 900);
 
-    ed.cam.pos = Vec3{0, 20, -60};
-    ed.cam.pitch = 0.35f;
+    ed.cam.pos = Vec3{0, 95, -190};   // outside the mountain, looking down at it
+    ed.cam.pitch = 0.42f;
 
     InputState input;
     const double kFixedDt = 1.0 / 60.0;
@@ -178,14 +187,27 @@ int main(int argc, char** argv) {
     while (!window.shouldClose()) {
         window.pumpMessages(input);
 
+        // Keep the backbuffer matched to the real window size (the game does
+        // this on WM_SIZE). Without it the RT and the UI coordinate space
+        // disagree and draws land outside the visible frame.
+        {
+            RECT r; GetClientRect(window.handle(), &r);
+            int w = (int)(r.right - r.left), h = (int)(r.bottom - r.top);
+            if (w > 0 && h > 0) gfx.resize(w, h);
+        }
+
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        // ---- docking root ----
-        ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
+        // Docking is enabled, but we do NOT force a full-screen dockspace:
+        // on a first run with no imgui.ini a dockspace can leave every panel
+        // hidden. Free-floating windows are always visible; the user can drag
+        // them into a dock layout which then persists in imgui.ini.
 
         // ---- Toolbar ----
+        ImGui::SetNextWindowPos(ImVec2(324, 32), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(1020, 44), ImGuiCond_FirstUseEver);
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("Save", "Ctrl+S")) {
@@ -214,7 +236,9 @@ int main(int argc, char** argv) {
             ImGui::EndMainMenuBar();
         }
 
-        // ---- Outliner ----
+        // ---- Outliner (left) ----
+        ImGui::SetNextWindowPos(ImVec2(12, 32), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(300, 420), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Outliner")) {
             if (ImGui::Button("+ Box")) {
                 SceneBox b; b.pos[1] = 5.f;
@@ -251,7 +275,9 @@ int main(int argc, char** argv) {
             ImGui::End();
         }
 
-        // ---- Details ----
+        // ---- Details (left, below outliner) ----
+        ImGui::SetNextWindowPos(ImVec2(12, 464), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(300, 424), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Details")) {
             if (!ed.selIsHold && ed.selected >= 0 && ed.selected < (int)ed.scene.boxes.size()) {
                 auto& b = ed.scene.boxes[(size_t)ed.selected];
@@ -281,10 +307,11 @@ int main(int argc, char** argv) {
             ImGui::End();
         }
 
-        // ---- Viewport ----
+        // ---- Viewport (right, large) ----
+        ImGui::SetNextWindowPos(ImVec2(324, 32), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(1020, 715), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Viewport")) {
-            ImVec2 sz = ImGui::GetContentRegionAvail();
-            ImGui::Text("size %.0fx%.0f  |  RMB-drag: orbit  |  wheel: zoom", sz.x, sz.y);
+            ImGui::Text("RMB-drag: orbit  |  wheel: zoom");
             ImGui::End();
         }
 
@@ -358,6 +385,10 @@ int main(int argc, char** argv) {
             ctx->UpdateSubresource(cbTint, 0, nullptr, col, 0, 0);
             unitMesh.draw(ctx);
         }
+
+        // UI overlay: depth OFF so ImGui always draws on top (same as the
+        // game's beginUI() path for its HUD).
+        gfx.beginUI();
 
         ImGui::Render();
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
