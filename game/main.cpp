@@ -6,6 +6,7 @@
 #include "render/shader_manager.h"
 #include "render/mesh.h"
 #include "render/camera.h"
+#include "render/frustum.h"
 #include "world/heightfield.h"
 #include "physics/verlet.h"
 #include "game/player/climber.h"
@@ -19,6 +20,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <ctime>
 #include <windows.h>
 #include <io.h>   // _access for projectRoot() asset-path walk-up
 
@@ -205,6 +207,15 @@ int main(int argc, char** argv) {
     Camera chaseCam;                       // yaw/pitch driven by mouse, pos by player
     chaseCam.pos = Vec3{0, 5, -90};
 
+    Frustum culler;                        // frustum cull for dynamic objects
+    float frustumPlanes[6][4] = {};
+    int drawCalls = 0;                      // incremented per actual draw
+    bool showProfiler = false;             // F3 toggles
+    int frameCount = 0;
+    double fpsAccum = 0, fpsTime = 0;
+    float fps = 0, frameMs = 0;
+    double tFrameStart = (double)clock() / CLOCKS_PER_SEC;
+
     bool prevEnter = false, prevUp = false, prevDown = false, prevBack = false;
     while (!window.shouldClose()) {
         window.pumpMessages(input);
@@ -244,6 +255,12 @@ int main(int argc, char** argv) {
         }
         prevEnter = input.down(VK_RETURN); prevUp = input.down(VK_UP);
         prevDown = input.down(VK_DOWN); prevBack = input.down(VK_BACK);
+
+        // F3 toggles the profiler overlay (works in menu and in-game)
+        static bool prevF3 = false;
+        bool f3 = input.down(VK_F3);
+        if (f3 && !prevF3) showProfiler = !showProfiler;
+        prevF3 = f3;
         if (input.down(VK_ESCAPE) && !showMenu) break;
 
         RECT rc; GetClientRect(window.handle(), &rc);
@@ -341,7 +358,7 @@ int main(int argc, char** argv) {
 
             // ---- networking (20Hz)
             if (!isSolo) {
-                net.pump();
+                net.pump((float)kFixedDt);
                 netTimer += kFixedDt;
                 if (netTimer >= kNetRate) {
                     netTimer -= kNetRate;
@@ -484,6 +501,9 @@ int main(int argc, char** argv) {
 
         float vp[16];
         chaseCam.viewProj(vp, aspect);
+        Camera::frustumPlanes(vp, frustumPlanes);
+        culler.setPlanes(frustumPlanes);
+        drawCalls = 0;
 
         ID3D11DeviceContext* ctx = gfx.ctx();
         ctx->UpdateSubresource(cbFrame, 0, nullptr, vp, 0, 0);
@@ -498,9 +518,12 @@ int main(int argc, char** argv) {
         ctx->UpdateSubresource(cbObj, 0, nullptr, identity, 0, 0);
         ctx->UpdateSubresource(cbTint, 0, nullptr, whiteTint, 0, 0);
         mountain.draw(ctx);
+        ++drawCalls;
 
         // crates: brownish, full quaternion orientation
         for (auto& b : phys.boxes_) {
+            float rad = std::sqrt(b.hx*b.hx + b.hy*b.hy + b.hz*b.hz) * 2.f;
+            if (!culler.sphereVisible(b.pos.x, b.pos.y, b.pos.z, rad)) continue;
             Vec3 ax0 = rotate(b.rot, Vec3{1,0,0});
             Vec3 ax1 = rotate(b.rot, Vec3{0,1,0});
             Vec3 ax2 = rotate(b.rot, Vec3{0,0,1});
@@ -515,29 +538,37 @@ int main(int argc, char** argv) {
             float brown[4] = { 0.72f, 0.55f, 0.34f, 1 };
             ctx->UpdateSubresource(cbTint, 0, nullptr, brown, 0, 0);
             unitMesh.draw(ctx);
+            ++drawCalls;
         }
         // player body parts: oriented boxes (bone-aligned, joint cubes seal gaps)
-        int np = player.collectParts(parts);
-        for (int i = 0; i < np; ++i) {
-            const auto& pb = parts[i];
-            Vec3 y = pb.yAxis;
-            Vec3 x = normalize(cross(y, pb.zHint));
-            Vec3 z = cross(x, y);
-            float sx = pb.half.x * 2.f, sy = pb.half.y * 2.f, sz = pb.half.z * 2.f;
-            float w[16] = {
-                x.x*sx, x.y*sx, x.z*sx, 0,
-                y.x*sy, y.y*sy, y.z*sy, 0,
-                z.x*sz, z.y*sz, z.z*sz, 0,
-                pb.center.x, pb.center.y, pb.center.z, 1
-            };
-            ctx->UpdateSubresource(cbObj, 0, nullptr, w, 0, 0);
-            float col[4] = { pb.color.x, pb.color.y, pb.color.z, 1 };
-            ctx->UpdateSubresource(cbTint, 0, nullptr, col, 0, 0);
-            unitMesh.draw(ctx);
+        {
+            Vec3 pp = player.pelvisPos();
+            if (culler.sphereVisible(pp.x, pp.y, pp.z, 3.0f)) {
+            int np = player.collectParts(parts);
+            for (int i = 0; i < np; ++i) {
+                const auto& pb = parts[i];
+                Vec3 y = pb.yAxis;
+                Vec3 x = normalize(cross(y, pb.zHint));
+                Vec3 z = cross(x, y);
+                float sx = pb.half.x * 2.f, sy = pb.half.y * 2.f, sz = pb.half.z * 2.f;
+                float w[16] = {
+                    x.x*sx, x.y*sx, x.z*sx, 0,
+                    y.x*sy, y.y*sy, y.z*sy, 0,
+                    z.x*sz, z.y*sz, z.z*sz, 0,
+                    pb.center.x, pb.center.y, pb.center.z, 1
+                };
+                ctx->UpdateSubresource(cbObj, 0, nullptr, w, 0, 0);
+                float col[4] = { pb.color.x, pb.color.y, pb.color.z, 1 };
+                ctx->UpdateSubresource(cbTint, 0, nullptr, col, 0, 0);
+                unitMesh.draw(ctx);
+                ++drawCalls;
+            }
+            }
         }
         // route holds: orange cubes (bigger for checkpoints)
         for (size_t i = 0; i < route.holds().size(); ++i) {
             const Hold& h = route.holds()[i];
+            if (!culler.sphereVisible(h.pos.x, h.pos.y, h.pos.z, 1.0f)) continue;
             float s = h.checkpoint ? 0.5f : 0.22f;
             bool active = h.checkpoint && (int)i == run.lastCheckpoint;
             float tint[4] = { active ? 0.2f : 0.95f,
@@ -548,11 +579,14 @@ int main(int argc, char** argv) {
             ctx->UpdateSubresource(cbObj, 0, nullptr, w, 0, 0);
             ctx->UpdateSubresource(cbTint, 0, nullptr, tint, 0, 0);
             holdMesh.draw(ctx);
+            ++drawCalls;
         }
 
         // HUD: stamina bar + timer + falls + win screen
         // remote climber (different shirt so you don't confuse yourselves ахахах)
         if (buddyActive) {
+            Vec3 bp = buddy.pelvisPos();
+            if (culler.sphereVisible(bp.x, bp.y, bp.z, 3.0f)) {
             int bn = buddy.collectParts(parts);
             for (int i = 0; i < bn; ++i) {
                 // recolor: swap shirt->teal
@@ -574,6 +608,8 @@ int main(int argc, char** argv) {
                 float colr[4] = { col.x, col.y, col.z, 1 };
                 ctx->UpdateSubresource(cbTint, 0, nullptr, colr, 0, 0);
                 unitMesh.draw(ctx);
+                ++drawCalls;
+            }
             }
         }
 
@@ -645,7 +681,44 @@ int main(int argc, char** argv) {
         }
         } // !showMenu: gameplay HUD
 
+        // ---- profiler overlay (F3) ----
+        if (showProfiler) {
+            char pb[256];
+            snprintf(pb, sizeof(pb),
+                "FPS %.0f   FRAME %.2f ms   DRAW CALLS %d   TRIS ~%d",
+                fps, frameMs, drawCalls, drawCalls * 36);
+            hud.draw(pb, 16.f, rc2.bottom - 90.f, 2.f, 0.6f, 1.f, 0.6f);
+            // net graph
+            char nb[256];
+            snprintf(nb, sizeof(nb),
+                "NET  sent %u/s  recv %u/s   (%llu sent / %llu recv)",
+                net.sentPerSec, net.recvPerSec,
+                (unsigned long long)net.packetsSent, (unsigned long long)net.packetsRecv);
+            hud.draw(nb, 16.f, rc2.bottom - 70.f, 2.f, 0.6f, 0.8f, 1.f);
+            // simple bar: sent (green) vs recv (cyan)
+            int bx = 16, by = (int)(rc2.bottom - 50.f), bw = 200, bh = 8;
+            float sFrac = std::min(1.f, net.sentPerSec / 60.f);
+            float rFrac = std::min(1.f, net.recvPerSec / 60.f);
+            for (int i = 0; i < bw; ++i) {
+                if (i < (int)(sFrac * bw))
+                    hud.draw("|", (float)(bx + i), (float)by, 2.f, 0.3f, 1.f, 0.4f);
+                if (i < (int)(rFrac * bw))
+                    hud.draw("|", (float)(bx + i), (float)(by + bh), 2.f, 0.3f, 0.9f, 1.f);
+            }
+            hud.draw("F3: HIDE", 16.f, rc2.bottom - 30.f, 1.5f, 0.7f, 0.7f, 0.7f);
+        }
+
         gfx.endFrame();
+
+        // frame timing for profiler (measured around the whole frame work)
+        {
+            double tEnd = (double)clock() / CLOCKS_PER_SEC;
+            double dtFrame = tEnd - tFrameStart;
+            tFrameStart = tEnd;
+            frameMs = (float)(dtFrame * 1000.0);
+            ++frameCount; fpsAccum += dtFrame;
+            if (fpsAccum >= 0.5) { fps = (float)(frameCount / fpsAccum); frameCount = 0; fpsAccum = 0; }
+        }
 
         input.endFrame();
         ++frame;

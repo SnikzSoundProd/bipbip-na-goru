@@ -43,4 +43,34 @@ void Camera::viewProj(float* out16, float aspect, float fovY, float zn, float zf
     for (int i = 0; i < 16; ++i) out16[i] = vp[i];
 }
 
+// Exact frustum-plane extraction (no heuristics, no sign flipping).
+// viewProj() writes a row-major matrix; HLSL reads the cbuffer column-major,
+// so the shader matrix is proj = transpose(vp), i.e. projRow_i[k] = vp[k*4+i].
+// Clip-space bounds for D3D: -w <= x <= w, -w <= y <= w, 0 <= z <= w.
+// Substituting x = projRow_0 . v etc. gives the six planes below, each with
+// "inside" == plane . (x,y,z,1) >= 0. Planes are normalized to unit normal.
+void Camera::frustumPlanes(const float* m, float planesOut[6][4]) {
+    // Column-major accessors into the row-major buffer: projRow_i[k] = m[k*4+i]
+    auto row = [m](int i, int k) -> float { return m[k * 4 + i]; };
+    auto set = [&](int i, int a, int b, float s) {
+        for (int k = 0; k < 4; ++k) planesOut[i][k] = row(a, k) + s * row(b, k);
+    };
+    auto setNear = [&](int i) {
+        for (int k = 0; k < 4; ++k) planesOut[i][k] = row(2, k);
+    };
+    set(0, 3, 0,  1.f); // left   = r3 + r0
+    set(1, 3, 0, -1.f); // right  = r3 - r0
+    set(2, 3, 1,  1.f); // bottom = r3 + r1
+    set(3, 3, 1, -1.f); // top    = r3 - r1
+    setNear(4);         // near   = r2
+    set(5, 3, 2, -1.f); // far    = r3 - r2
+    // normalize so signed distance is in world units
+    for (int i = 0; i < 6; ++i) {
+        float len = sqrtf(planesOut[i][0]*planesOut[i][0]
+                        + planesOut[i][1]*planesOut[i][1]
+                        + planesOut[i][2]*planesOut[i][2]);
+        if (len > 1e-6f) for (int k = 0; k < 4; ++k) planesOut[i][k] /= len;
+    }
+}
+
 } // namespace bip

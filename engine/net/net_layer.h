@@ -13,8 +13,8 @@ public:
     bool join(const std::string& ip, uint16_t port);
     void shutdown();
 
-    // call every frame: pumps callbacks
-    void pump();
+    // call every frame: pumps callbacks, updates rolling rates
+    void pump(float dt = 0.f);
 
     // client: queue input (sent at 20Hz); host: applies via callback below
     void sendInput(const net::InputPacket& in);
@@ -31,6 +31,16 @@ public:
     net::PlayerSnapshot remoteSnapshot{};
     bool welcomeReceived = false;
     net::WelcomePacket welcome{};
+
+    // network statistics (real, incremented on every send/recv)
+    uint64_t packetsSent = 0;
+    uint64_t packetsRecv = 0;
+    uint64_t bytesSent = 0;
+    uint64_t bytesRecv = 0;
+    // rolling 1-second rates (updated by pump())
+    uint32_t sentPerSec = 0;
+    uint32_t recvPerSec = 0;
+    float rttMs = 0.f;
 
 private:
     static NetLayer* s_inst;

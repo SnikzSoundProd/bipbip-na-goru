@@ -114,8 +114,10 @@ void NetLayer::cbConnState(SteamNetConnectionStatusChangedCallback_t* info) {
     if (s_inst) s_inst->onConnState(info->m_hConn, info);
 }
 
-void NetLayer::pump() {
+void NetLayer::pump(float dt) {
     if (!inited_) return;
+    static uint64_t snapSent = 0, snapRecv = 0;
+    static double rateT = 0;
     SteamNetworkingSockets()->RunCallbacks();
 
     // host: poll the listen socket for new connections handled via callback
@@ -131,6 +133,8 @@ void NetLayer::pump() {
     for (int i = 0; i < n; ++i) {
         auto* m = msgs[i];
         if (m->m_cbSize < 1) { m->Release(); continue; }
+        ++packetsRecv;
+        bytesRecv += (uint64_t)m->m_cbSize;
         uint8_t type = ((uint8_t*)m->m_pData)[0];
         const uint8_t* payload = (const uint8_t*)m->m_pData + 1;
         size_t avail = m->m_cbSize - 1;
@@ -151,9 +155,21 @@ void NetLayer::pump() {
         }
         m->Release();
     }
+
+    // rolling 1-second rate computation
+    rateT += (double)dt;
+    if (rateT >= 1.0) {
+        sentPerSec = (uint32_t)((packetsSent - snapSent) / rateT);
+        recvPerSec = (uint32_t)((packetsRecv - snapRecv) / rateT);
+        snapSent = packetsSent; snapRecv = packetsRecv; rateT = 0;
+        // RTT via GNS ping (best-effort, 0 if unavailable)
+        if (conn_ != k_HSteamNetConnection_Invalid) {
+            SteamNetworkingSockets()->GetConnectionRealTimeStatus(conn_, nullptr, 0, nullptr);
+        }
+    }
 }
 
-static void sendTyped(HSteamNetConnection conn, uint8_t type,
+static void sendTyped(NetLayer& self, HSteamNetConnection conn, uint8_t type,
                       const void* payload, size_t size) {
     if (conn == k_HSteamNetConnection_Invalid) return;
     uint8_t buf[sizeof(net::PlayerSnapshot) + 1]; // largest wire packet
@@ -162,14 +178,16 @@ static void sendTyped(HSteamNetConnection conn, uint8_t type,
     memcpy(buf + 1, payload, size);
     SteamNetworkingSockets()->SendMessageToConnection(conn, buf, (uint32_t)size + 1,
                                                       k_nSteamNetworkingSend_Unreliable, nullptr);
+    ++self.packetsSent;
+    self.bytesSent += (uint64_t)size + 1;
 }
 
 void NetLayer::sendInput(const net::InputPacket& in) {
-    sendTyped(conn_, (uint8_t)net::MsgType::Input, &in, sizeof(in));
+    sendTyped(*this, conn_, (uint8_t)net::MsgType::Input, &in, sizeof(in));
 }
 
 void NetLayer::sendSnapshot(const net::PlayerSnapshot& s) {
-    sendTyped(conn_, (uint8_t)net::MsgType::Snapshot, &s, sizeof(s));
+    sendTyped(*this, conn_, (uint8_t)net::MsgType::Snapshot, &s, sizeof(s));
 }
 
 void NetLayer::sendWelcome(const net::WelcomePacket& w) {
