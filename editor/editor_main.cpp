@@ -123,12 +123,22 @@ struct Editor {
         flyTo(dest, yaw, pitch);
     }
 
-    // Snap the camera onto the local player (who you control in PIE).
+    // Frame the player exactly like the game's chase camera: BEHIND and above,
+    // looking slightly down, so he sits in the centre of the frame. The generic
+    // focusOn() keeps the current side angle, which pushed him below the view.
     void focusPlayer() {
         if (!pie.active()) return;
         Vec3 p = pie.player.pelvisPos();
-        focusOn(p, 2.0f);
+        const float pitch = 0.32f;                 // ~18deg down, same as the game
+        Vec3 back{ -sinf(cam.yaw) * cosf(pitch), sinf(pitch),
+                    -cosf(cam.yaw) * cosf(pitch) };
+        Vec3 dest = p + back * 6.5f + Vec3{0, 1.6f, 0};
+        // keep the camera out of the rock
+        const HeightField& hfRef = (mode == EditorMode::Play) ? pie.hf : editHf;
+        float ground = hfRef.heightAt(dest.x, dest.z) + 0.8f;
+        if (dest.y < ground) dest.y = ground;
         camFollowPlayer = true;
+        flyTo(dest, cam.yaw, pitch);
     }
 
     void updateCamera(float dt) {
@@ -197,9 +207,10 @@ void drawClimber(ID3D11DeviceContext* ctx, ID3D11Buffer* cbObj, ID3D11Buffer* cb
 // even when the body is tiny against the mountain.
 void drawPlayerMarker(ID3D11DeviceContext* ctx, ID3D11Buffer* cbObj, ID3D11Buffer* cbTint,
                       const Mesh& unitMesh, const Vec3& pelvis, bool isBuddy, float timeSec) {
-    float bob = sinf(timeSec * 3.f) * 0.08f;
-    float y = pelvis.y + 1.35f + bob;
-    float s = isBuddy ? 0.16f : 0.20f;
+    float bob = sinf(timeSec * 3.f) * 0.06f;
+    // sit just above the head (~1.7m rig), not floating off in the sky
+    float y = pelvis.y + 1.05f + bob;
+    float s = isBuddy ? 0.11f : 0.13f;
     float w[16] = { s,0,0,0, 0,s,0,0, 0,0,s,0, pelvis.x, y, pelvis.z, 1 };
     ctx->UpdateSubresource(cbObj, 0, nullptr, w, 0, 0);
     float col[4] = { isBuddy ? 0.10f : 1.f, isBuddy ? 0.95f : 0.85f, isBuddy ? 0.85f : 0.10f, 1 };
@@ -383,10 +394,11 @@ int main(int argc, char** argv) {
                 if (ImGui::Button("> Play")) {
                     ed.pie.start(ed.scene, gfx.device());
                     ed.mode = EditorMode::Play;
-                    // smoothly fly from the editor camera to the player, then
-                    // keep the camera trailing him (Unreal PIE behaviour)
+                    // fly in with the game's chase framing (behind + above)
+                    ed.cam.pitch = 0.32f;      // set before the flight so the
+                                               // chase target uses it too
                     ed.camFollowPlayer = true;
-                    ed.focusPlayer();   // flies in close so the body is visible
+                    ed.focusPlayer();
                 }
             }
             ImGui::SameLine();
