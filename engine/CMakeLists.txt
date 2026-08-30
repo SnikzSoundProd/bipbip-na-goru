@@ -4,6 +4,9 @@ add_library(bipbip_engine STATIC)
 target_include_directories(bipbip_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS *.cpp)
+# Keep standalone *_test.cpp units out of the engine lib; they are built
+# separately (offline, no D3D) during verification.
+list(FILTER ENGINE_SOURCES EXCLUDE REGEX "_test\\.cpp$")
 target_sources(bipbip_engine PRIVATE ${ENGINE_SOURCES})
 
 # Physics: custom verlet solver (see engine/physics/verlet.*)
@@ -42,4 +45,5 @@ target_link_libraries(bipbip_engine PUBLIC
 
 target_link_libraries(bipbip_engine PUBLIC
     d3d11 dxgi d3dcompiler ws2_32 bcrypt crypt32 winmm xinput iphlpapi psapi userenv dbghelp
+    windowscodecs ole32 uuid
 )

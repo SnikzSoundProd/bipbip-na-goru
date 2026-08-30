@@ -1,0 +1,38 @@
+# Sample placeholder humanoid proxy for the asset pipeline scaffold.
+# This file is NOT yet rendered by the game — it documents the expected
+# format and gives AssetManager::mesh("climber") something to load later.
+# Swap this out for a real authored mesh when the rig is ready.
+#
+# Units: arbitrary; loadObj() center+scales to roughly unit size.
+v -0.15 0.00 -0.10
+v  0.15 0.00 -0.10
+v -0.15 0.00  0.10
+v  0.15 0.00  0.10
+v -0.15 1.40 -0.10
+v  0.15 1.40 -0.10
+v -0.15 1.40  0.10
+v  0.15 1.40  0.10
+vn 0 0 -1
+vn 0 0 1
+vn 0 -1 0
+vn 0 1 0
+vn -1 0 0
+vn 1 0 0
+vt 0 0
+vt 1 0
+vt 0 1
+vt 1 1
+# box body, 12 triangles
+f 1/1/3 2/2/3 4/4/3
+f 1/1/3 4/4/3 3/3/3
+f 5/3/4 7/4/4 8/2/4
+f 5/3/4 8/2/4 6/1/4
+f 1/1/1 3/3/1 7/4/1
+f 1/1/1 7/4/1 5/3/1
+f 2/2/2 8/4/2 4/3/2
+f 2/2/2 6/1/2 8/4/2
+f 3/3/5 4/4/5 8/2/5
+f 3/3/5 8/2/5 7/1/5
+f 1/1/6 5/3/6 6/1/6
+f 1/1/6 6/1/6 2/2/6
+

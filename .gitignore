@@ -8,3 +8,5 @@ thirdparty/GameNetworkingSockets*/
 *.obj
 *.a
 *.zip
+# Exception: authored Wavefront mesh assets (not compiler object files)
+!assets/meshes/*.obj
