@@ -54,7 +54,13 @@ bool NetLayer::join(const std::string& ip, uint16_t port) {
     SteamNetworkingUtils()->InitRelayNetworkAccess();
 
     SteamNetworkingIPAddr addr{};
-    addr.ParseString(ip.c_str());
+    if (!addr.ParseString(ip.c_str())) {
+        // Parsing silently yields a zeroed address, and ConnectByIPAddress then
+        // dials nowhere while still returning a "valid" handle — the connection
+        // never completes and there is no error. Fail loudly instead.
+        fprintf(stderr, "[net] bad IP address: '%s'\n", ip.c_str());
+        return false;
+    }
     addr.m_port = port;
     SteamNetworkingConfigValue_t opt;
     opt.SetPtr(k_ESteamNetworkingConfig_Callback_ConnectionStatusChanged,

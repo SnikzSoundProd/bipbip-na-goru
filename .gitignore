@@ -1,14 +1,38 @@
+# --- builds -------------------------------------------------------------
 build/
+build_*/
 out/
+cmake-build-*/
+
+# --- portable toolchains (cmake/ninja binaries), keep build scripts -----
 tools/
-# Exception: build scripts in tools/ (portable cmake/ninja binaries stay ignored)
 !tools/*.cmake
+
+# --- thirdparty (vendored sources are tracked; big build dirs are not) --
 thirdparty/JoltPhysics/
 thirdparty/gns-build/
 thirdparty/GameNetworkingSockets*/
+
+# --- build artifacts ----------------------------------------------------
 *.exe
-*.obj
+*.dll
+*.lib
 *.a
+*.o
+*.obj
+*.pdb
+*.ilk
+*.exp
 *.zip
-# Exception: authored Wavefront mesh assets (not compiler object files)
+# Exception: authored Wavefront mesh assets (NOT compiler object files)
 !assets/meshes/*.obj
+
+# --- editor / tool runtime state ---------------------------------------
+imgui.ini
+*.log
+*.tmp
+
+# --- OS -----------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini

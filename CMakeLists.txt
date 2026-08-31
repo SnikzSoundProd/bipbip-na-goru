@@ -13,7 +13,16 @@ set(ENGINE_GNS_GEN_INC  "C:/Users/apex/bipbip/thirdparty/gns-build/include" CACH
 set(ENGINE_GNS_LIB      "C:/Users/apex/bipbip/thirdparty/gns-build/src/libGameNetworkingSockets_s.a" CACHE FILEPATH "GNS static lib")
 
 include(tools/imgui.cmake)
+include(tools/runtime_dlls.cmake)
+
+# Enable CTest at the TOP LEVEL so `ctest` in the build dir finds the suites
+# registered by the subdirectories (enable_testing() only affects the current
+# directory and below, which is why it must live here, not in tests/).
+enable_testing()
 
 add_subdirectory(engine)
 add_subdirectory(game)
 add_subdirectory(editor)
+
+# Test suites (registered with CTest): cmake --build . && ctest
+add_subdirectory(tests)

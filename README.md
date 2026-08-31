@@ -125,12 +125,20 @@ export PATH="/c/Users/apex/bipbip/tools/cmake-3.30.5-windows-x86_64/bin:/c/Users
 cd /c/Users/apex/bipbip/build
 cmake -G Ninja ..
 cmake --build .
+ctest --output-on-failure     # 11/11 тестов, включая кооп smoke-тест
 ```
 
-Соберутся два таргета:
+Это **единственная точка входа**: сборка игрa + редактора + всех тестов, затем прогон тестов. Ручные команды `g++` не нужны (разве что для отладки одного теста).
 
-- `build/game/bipbip.exe` — игра
-- `build/editor/bipbip_editor.exe` — редактор
+Соберутся три категории таргетов:
+
+| Таргет | Что это |
+|---|---|
+| `build/game/bipbip.exe` | игра |
+| `build/editor/bipbip_editor.exe` | редактор |
+| `build/tests/*_test.exe` | 10 тестовых suite'ов + `coop_smoke` |
+
+DLL MinGW (protobuf, libstdc++ и пр.) копируются рядом с каждым exe автоматически — общий helper `tools/runtime_dlls.cmake`, без дублирования в каждом `CMakeLists.txt`.
 
 Зависимости (вендорятся):
 - **Dear ImGui** (docking branch) — `thirdparty/imgui`, только для редактора
@@ -282,7 +290,21 @@ hold 3 16.8474 90  1
 | `CAMERA_FLY_TEST_PASS` | Плавные перелёты камеры (ease, точность попадания) | standalone |
 | `ASSET_PIPELINE_TEST_PASS` | Загрузка `.obj` и файл-вотчер | standalone |
 | *(menu, assert-based)* | Валидация IPv4 и переходы меню — через `assert()`, при успехе молча выходит с кодом 0 | standalone |
-| `PIE_TEST_PASS` | Play/Stop/restart в редакторе без крашей | через CMake (нужен D3D/GNS) |
+| `PIE_TEST_PASS` | Play/Stop/restart в editor без крашей | через CMake (нужен D3D/GNS) |
+| `coop_smoke_test` | **Реальный кооп**: поднимает host + client и проверяет handshake на обеих сторонах | через CTest (PowerShell) |
+
+### Запуск всех тестов
+
+```bash
+cd build
+cmake -G Ninja ..
+cmake --build .
+ctest --output-on-failure
+```
+
+Ожидаемо: **100% tests passed (11 из 11)**.
+
+> `coop_smoke_test` — это **настоящий** сетевой тест: он запускает два процесса игры (хост и клиент), даёт им соединиться и проверяет по логам, что **обе стороны** доложили о появлении buddy. Просто «два живых процесса» ничего не доказывали — см. раздел про баг с `--join` ниже.
 
 Пример standalone-теста:
 
@@ -290,6 +312,40 @@ hold 3 16.8474 90  1
 g++ -std=c++20 -I. -Iengine \
     engine/core/game_config.cpp engine/core/game_config_test.cpp -o /tmp/cfg && /tmp/cfg
 ```
+
+### Примечание про smoke-тест
+
+`NetLayer` использует **статический** указатель на инстанс, поэтому хост и клиент **не могут** работать в одном процессе — только два отдельных exe. Это совпадает с реальным деплоем, так что тест честный.
+
+---
+
+## Разбор: баг из-за которого сеть «молча» не работала
+
+Показательный случай, найденный именно smoke-тестом.
+
+Парсинг аргументов начинался со второго индекса:
+
+```cpp
+for (int i = 2; i < argc; ++i) {          // ← неверно
+    if (!strcmp(argv[i], "--host")) ...
+    else if (!strcmp(argv[i], "--join") ...)
+}
+```
+
+При запуске `bipbip --join 127.0.0.1` (без сида) флаг `--join` — это `argv[1]`, а не `argv[2]`. Он **пропускался**, режим оставался `Solo`, и игра запускалась **без сети вообще** — при этом оба процесса выглядели «живыми и здоровыми».
+
+`--host` работал только потому, что его запускали с сидом: `bipbip 1337 --host`, где `--host` попадал в `argv[2]`.
+
+Фикс — сканировать с `1`, игнорируя нераспознанные аргументы (сид):
+
+```cpp
+for (int i = 1; i < argc; ++i) {
+    if (!strcmp(argv[i], "--host")) netMode = NetMode::Host;
+    else if (!strcmp(argv[i], "--join") && i + 1 < argc) { netMode = NetMode::Join; joinIp = argv[++i]; }
+}
+```
+
+Плюс добавлен лог `[boot] netmode=...`, чтобы режим был виден сразу, и проверка `addr.ParseString()` в `NetLayer::join` (раньше неудачный парсинг давал нулевой адрес и «валидный» хендл, который никуда не соединялся).
 
 ---
 

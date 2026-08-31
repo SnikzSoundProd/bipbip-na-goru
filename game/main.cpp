@@ -22,6 +22,7 @@
 #include <vector>
 #include "core/scene.h"
 #include "core/game_config.h"
+#include "game/hud/hud_overlay.h"
 #include <ctime>
 #include <windows.h>
 #include <io.h>   // _access for projectRoot() asset-path walk-up
@@ -81,13 +82,20 @@ int main(int argc, char** argv) {
     if (argc > 1) seed = strtoull(argv[1], nullptr, 10);
 
     // net modes: bipbip [seed] --host | --join IP
+    //
+    // Scanning MUST start at 1, not 2: with `bipbip --join 127.0.0.1` the flag
+    // is argv[1], so starting at 2 silently ignored it and left the game in
+    // Solo mode with no network at all. Anything that is not a recognised flag
+    // (i.e. the numeric seed) is simply skipped, so the seed stays optional.
     enum class NetMode { Solo, Host, Join };
     NetMode netMode = NetMode::Solo;
     std::string joinIp = "127.0.0.1";
-    for (int i = 2; i < argc; ++i) {
+    for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--host")) netMode = NetMode::Host;
         else if (!strcmp(argv[i], "--join") && i + 1 < argc) { netMode = NetMode::Join; joinIp = argv[++i]; }
     }
+    fprintf(stderr, "[boot] netmode=%s\n",
+            netMode == NetMode::Host ? "host" : (netMode == NetMode::Join ? "join" : "solo"));
     bool isSolo = (netMode == NetMode::Solo);
 
     Window window;
@@ -655,43 +663,23 @@ int main(int argc, char** argv) {
             if (menu.state == MenuState::Error)
                 hud.draw(menu.error, x, y + 325.f, 2.f, 1.f, 0.25f, 0.25f);
         } else {
-        // stamina bar top-left
-        hud.draw("STAMINA", 16.f, 14.f, 2.f, 1, 1, 1);
         {
-            int filled = (int)(run.stamina / 100.f * cfg.gameplay.staminaSegs + 0.5f);
-            std::string bar;
-            for (int i = 0; i < cfg.gameplay.staminaSegs; ++i) bar += (i < filled) ? '#' : '.';
-            float cr = run.stamina > 40 ? 0.2f : 1.0f;
-            float cg = run.stamina > 40 ? 0.85f : 0.25f;
-            hud.draw(bar, 16.f, 32.f, 2.f, cr, cg, 0.2f);
-        }
-        char buf[128];
-        snprintf(buf, sizeof(buf), "TIME %.1f  FALLS %d", run.runTime, run.falls);
-        hud.draw(buf, 16.f, 54.f, 2.f, 1, 1, 1);
-        snprintf(buf, sizeof(buf), "HOLDS NEAR: %s   SEED %llu",
-                 route.nearest(player.pelvisPos(), 2.5f) >= 0 ? "GRAB!" : "-",
-                 (unsigned long long)seed);
-        hud.draw(buf, 16.f, 74.f, 2.f, 0.85f, 0.85f, 0.9f);
-        // net status line
-        const char* netStatus = isSolo ? "SOLO" :
-            (net.connected() ? (netMode == NetMode::Host ? "HOST: peer connected" : "JOINED") :
-             (netMode == NetMode::Host ? "HOST: waiting on :27015" : "JOINING..."));
-        hud.draw(netStatus, 16.f, 94.f, 2.f, net.connected() || isSolo ? 0.4f : 1.f,
-                 isSolo ? 0.7f : (net.connected() ? 1.f : 0.4f), 0.4f);
-        // buddy indicator (debug): shows if remote player is rendered
-        if (!isSolo) {
-            snprintf(buf, sizeof(buf), "BUDDY: %s", buddyActive ? "ON" : "off");
-            hud.draw(buf, 16.f, 114.f, 2.f, buddyActive ? 0.3f : 0.7f,
-                     buddyActive ? 1.f : 0.3f, 0.4f);
-        }
-        if (run.exhausted)
-            hud.draw("HANDS SLIP! REST!", 480.f, 60.f, 3.f, 1, 0.25f, 0.2f);
-        if (run.finished) {
-            hud.draw("SUMMIT!!!", 470.f, 240.f, 8.f, 1, 0.85f, 0.1f);
-            snprintf(buf, sizeof(buf), "TIME %.1fs   FALLS %d", run.finishTime, run.falls);
-            hud.draw(buf, 500.f, 330.f, 3.f, 1, 1, 1);
-            hud.draw("ESC TO QUIT - R FOR NEW RUN", 430.f, 380.f, 2.f, 0.9f, 0.9f, 0.9f);
-            if (input.down('R')) {
+            // Single shared HUD implementation (also used by the editor), so
+            // the two can never drift apart.
+            HudInputs hi;
+            hi.run = &run;
+            hi.player = &player;
+            hi.route = &route;
+            hi.phys = &phys;
+            hi.net = &net;
+            hi.isSolo = isSolo;
+            hi.buddyActive = buddyActive;
+            hi.connected = net.connected();
+            hi.isHost = (netMode == NetMode::Host);
+            hi.seed = seed;
+            drawGameplayHud(hud, hi, cfg);
+
+            if (run.finished && input.down('R')) {
                 // new run: reset state (same mountain; new seed = relaunch with arg)
                 run.reset(Vec3{0, hf.heightAt(0.f, 118.f), 118.f});
                 player.respawn(run.respawn);
@@ -699,32 +687,17 @@ int main(int argc, char** argv) {
         }
         } // !showMenu: gameplay HUD
 
-        // ---- profiler overlay (F3) ----
+        // ---- profiler overlay (F3) ---- shared implementation ----
         if (showProfiler) {
-            char pb[256];
-            snprintf(pb, sizeof(pb),
-                "FPS %.0f   FRAME %.2f ms   DRAW CALLS %d   TRIS ~%d   SLEEP %d/%d",
-                fps, frameMs, drawCalls, drawCalls * 36,
-                phys.sleepingBoxCount(), (int)phys.boxes_.size());
-            hud.draw(pb, 16.f, rc2.bottom - 90.f, 2.f, 0.6f, 1.f, 0.6f);
-            // net graph
-            char nb[256];
-            snprintf(nb, sizeof(nb),
-                "NET  sent %u/s  recv %u/s   (%llu sent / %llu recv)",
-                net.sentPerSec, net.recvPerSec,
-                (unsigned long long)net.packetsSent, (unsigned long long)net.packetsRecv);
-            hud.draw(nb, 16.f, rc2.bottom - 70.f, 2.f, 0.6f, 0.8f, 1.f);
-            // simple bar: sent (green) vs recv (cyan)
-            int bx = 16, by = (int)(rc2.bottom - 50.f), bw = 200, bh = 8;
-            float sFrac = std::min(1.f, net.sentPerSec / 60.f);
-            float rFrac = std::min(1.f, net.recvPerSec / 60.f);
-            for (int i = 0; i < bw; ++i) {
-                if (i < (int)(sFrac * bw))
-                    hud.draw("|", (float)(bx + i), (float)by, 2.f, 0.3f, 1.f, 0.4f);
-                if (i < (int)(rFrac * bw))
-                    hud.draw("|", (float)(bx + i), (float)(by + bh), 2.f, 0.3f, 0.9f, 1.f);
-            }
-            hud.draw("F3: HIDE", 16.f, rc2.bottom - 30.f, 1.5f, 0.7f, 0.7f, 0.7f);
+            HudInputs pi;
+            pi.phys = &phys;
+            pi.net = &net;
+            pi.fps = fps;
+            pi.frameMs = frameMs;
+            pi.drawCalls = drawCalls;
+            pi.boxesSleep = phys.sleepingBoxCount();
+            pi.boxesTotal = (int)phys.boxes_.size();
+            drawProfilerOverlay(hud, pi, (float)rc2.right, (float)rc2.bottom);
         }
 
         gfx.endFrame();

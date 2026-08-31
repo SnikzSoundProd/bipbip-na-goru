@@ -7,6 +7,7 @@
 // Unreal problem we fix by snapshotting at Play time.
 #include "core/scene.h"
 #include "platform/input.h"
+#include "net/net_layer.h"
 #include "world/heightfield.h"
 #include "physics/verlet.h"
 #include "game/player/climber.h"
@@ -38,6 +39,8 @@ public:
     Route         route;
     RunState      run;
     Gameplay      gp;
+    NetLayer      net;        // editor can host/join so PIE shows a real buddy
+    bool          isHost = false;
 
     // scene copy this PIE instance was launched from (Play-time snapshot)
     Scene         snapshot;
