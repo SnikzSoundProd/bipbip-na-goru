@@ -14,6 +14,7 @@
 #include "physics/verlet.h"
 #include "core/scene.h"
 #include "core/game_config.h"
+#include "game/hud/hud_overlay.h"
 #include "pie_world.h"
 #include "camera_fly.h"
 
@@ -87,6 +88,15 @@ struct Editor {
     std::string path;
     char statusMsg[256] = "";
 
+    // ---- HUD / profiler parity with the game ----
+    bool showProfiler = false;      // F3 toggles, same as the game
+    bool showHud      = true;       // F2 toggles the in-game HUD
+    int  drawCalls    = 0;
+    float fps = 0.f, frameMs = 0.f;
+    int  frameCount = 0;
+    double fpsAccum = 0, tPrev = 0;
+    int  viewW = 1600, viewH = 900;   // render target size (for overlay layout)
+
     // Shared tunables (same struct the game loads) so editor and game cannot drift.
     GameConfig cfg;
     std::string cfgPath;
@@ -110,10 +120,11 @@ struct Editor {
     // Frame an object: pull the camera to a comfortable distance from `pos`,
     // keeping the current viewing direction (Unreal's "F" focus behaviour).
     void focusOn(const Vec3& pos, float radius) {
-        Vec3 dir = cam.pos - pos;
-        float len = std::sqrt(dir.x*dir.x + dir.y*dir.y + dir.z*dir.z);
-        if (len < 0.001f) dir = Vec3{0.f, 0.35f, 1.f};
-        else              dir = dir * (1.f / len);
+        // Length check BEFORE the divide: normalize() on a zero vector yields
+        // NaN, and a post-hoc `len < eps` test on NaN is always false.
+        Vec3 delta = cam.pos - pos;
+        float len = std::sqrt(delta.x*delta.x + delta.y*delta.y + delta.z*delta.z);
+        Vec3 dir = (len > 0.001f) ? delta * (1.f / len) : Vec3{0.f, 0.35f, 1.f};
         float dist = std::max(7.f, radius * 4.5f);
         Vec3 dest = pos + dir * dist;
         // Never fly underground: lift the camera above the terrain surface.
@@ -335,7 +346,7 @@ int main(int argc, char** argv) {
         {
             RECT r; GetClientRect(window.handle(), &r);
             int w = (int)(r.right - r.left), h = (int)(r.bottom - r.top);
-            if (w > 0 && h > 0) gfx.resize(w, h);
+            if (w > 0 && h > 0) { gfx.resize(w, h); ed.viewW = w; ed.viewH = h; }
         }
 
         ImGui_ImplDX11_NewFrame();
@@ -382,8 +393,9 @@ int main(int argc, char** argv) {
         }
 
         // ---- Toolbar ----
-        ImGui::SetNextWindowPos(ImVec2(324, 32), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(1020, 44), ImGuiCond_FirstUseEver);
+        // NOTE: no SetNextWindowPos/Size here — BeginMainMenuBar() manages its
+        // own geometry. Calling those before it corrupts ImGui's window state
+        // and crashes when a panel is collapsed.
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("Save", "Ctrl+S")) {
@@ -426,7 +438,8 @@ int main(int argc, char** argv) {
         // ---- Outliner (left) ----
         ImGui::SetNextWindowPos(ImVec2(12, 32), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(300, 420), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Outliner")) {
+        bool open_Outliner = ImGui::Begin("Outliner");
+        if (open_Outliner) {
             if (ImGui::Button("+ Box")) {
                 SceneBox b; b.pos[1] = 5.f;
                 ed.scene.boxes.push_back(b);
@@ -471,13 +484,14 @@ int main(int argc, char** argv) {
                     snprintf(ed.statusMsg, sizeof(ed.statusMsg), "Hold %zu", i);
                 }
             }
-            ImGui::End();
         }
+        ImGui::End();   // unconditional: ImGui requires End() even when Begin() returns false (collapsed)
 
         // ---- Details (left, below outliner) ----
         ImGui::SetNextWindowPos(ImVec2(12, 464), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(300, 424), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Details")) {
+        bool open_Details = ImGui::Begin("Details");
+        if (open_Details) {
             if (!ed.selIsHold && ed.selected >= 0 && ed.selected < (int)ed.scene.boxes.size()) {
                 auto& b = ed.scene.boxes[(size_t)ed.selected];
                 ImGui::Text("Box %d", ed.selected);
@@ -525,13 +539,16 @@ int main(int argc, char** argv) {
                 ed.pie.rebuildFromScene(ed.scene);
                 snprintf(ed.statusMsg, sizeof(ed.statusMsg), "Hot-applied to PIE (no restart needed)");
             }
-            ImGui::End();
         }
+        ImGui::End();   // unconditional: ImGui requires End() even when Begin() returns false (collapsed)
 
         // ---- Settings (shared GameConfig — same values the game loads) ----
-        ImGui::SetNextWindowPos(ImVec2(12, 464), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(300, 424), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Settings")) {
+        // Stacked BELOW Details (which ends at y=888); sharing the same rect
+        // with another panel confuses ImGui's layout bookkeeping.
+        ImGui::SetNextWindowPos(ImVec2(12, 500), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(300, 260), ImGuiCond_FirstUseEver);
+        bool open_Settings = ImGui::Begin("Settings");
+        if (open_Settings) {
             GameConfig& c = ed.cfg;
             if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::DragFloat("chase distance", &c.camera.distance, 0.1f, 2.f, 40.f);
@@ -582,13 +599,14 @@ int main(int argc, char** argv) {
             ImGui::SameLine();
             if (ImGui::Button("Defaults")) ed.cfg.reset();
             ImGui::TextDisabled("Saved to assets/config/game.cfg");
-            ImGui::End();
         }
+        ImGui::End();   // unconditional: ImGui requires End() even when Begin() returns false (collapsed)
 
         // ---- Viewport (right, large) ----
         ImGui::SetNextWindowPos(ImVec2(324, 32), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(1020, 715), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Viewport")) {
+        bool open_Viewport = ImGui::Begin("Viewport");
+        if (open_Viewport) {
             ImGui::Text("RMB-drag: orbit | wheel: zoom | LMB-click: select & fly to");
             if (ed.mode == EditorMode::Play) {
                 ImGui::TextColored(ImVec4(1.f, 0.85f, 0.1f, 1.f),
@@ -640,9 +658,13 @@ int main(int argc, char** argv) {
                 if (bestBox >= 0) {
                     ed.selected = bestBox; ed.selIsHold = false;
                     const BoxProp& b = boxList[(size_t)bestBox];
-                    // fly to a comfortable viewing distance from the object
-                    Vec3 dir = normalize(ed.cam.pos - b.pos);
-                    if (length(dir) < 0.001f) dir = Vec3{0, 0.3f, 1.f};
+                    // Distance check BEFORE normalize: normalizing a zero-length
+                    // vector divides by zero and yields NaN, and a later
+                    // `length(dir) < eps` check on NaN is always false, so the
+                    // fallback never ran and NaN poisoned the camera.
+                    Vec3 delta = ed.cam.pos - b.pos;
+                    float len = length(delta);
+                    Vec3 dir = (len > 0.001f) ? delta * (1.f / len) : Vec3{0.f, 0.3f, 1.f};
                     float dist = std::max(6.f, (b.hx + b.hy + b.hz) * 4.f);
                     Vec3 dest = b.pos + dir * dist;
                     float yaw = atan2f(-dir.x, -dir.z);
@@ -655,8 +677,9 @@ int main(int argc, char** argv) {
                     Vec3 p{ ed.scene.holds[bestHold].pos[0],
                             ed.scene.holds[bestHold].pos[1],
                             ed.scene.holds[bestHold].pos[2] };
-                    Vec3 dir = normalize(ed.cam.pos - p);
-                    if (length(dir) < 0.001f) dir = Vec3{0, 0.3f, 1.f};
+                    Vec3 delta = ed.cam.pos - p;
+                    float len = length(delta);
+                    Vec3 dir = (len > 0.001f) ? delta * (1.f / len) : Vec3{0.f, 0.3f, 1.f};
                     Vec3 dest = p + dir * 8.f;
                     float yaw = atan2f(-dir.x, -dir.z);
                     float pitch = asinf(std::max(-1.f, std::min(1.f, -dir.y)));
@@ -665,10 +688,18 @@ int main(int argc, char** argv) {
                     snprintf(ed.statusMsg, sizeof(ed.statusMsg), "Selected Hold %d", bestHold);
                 }
             }
-            ImGui::End();
         }
+        ImGui::End();   // unconditional: ImGui requires End() even when Begin() returns false (collapsed)
 
         // ---- camera: orbit (RMB) + zoom, or follow the player in PIE ----
+        // F3 = profiler, F2 = in-game HUD (same keys/behaviour as the game)
+        {
+            static bool prevF3 = false, prevF2 = false;
+            bool f3 = input.down(VK_F3), f2 = input.down(VK_F2);
+            if (f3 && !prevF3) ed.showProfiler = !ed.showProfiler;
+            if (f2 && !prevF2) ed.showHud      = !ed.showHud;
+            prevF3 = f3; prevF2 = f2;
+        }
         // F: focus the local player (same as the Viewport button)
         {
             static bool prevF = false;
@@ -730,6 +761,7 @@ int main(int argc, char** argv) {
         ctx->UpdateSubresource(cbObj, 0, nullptr, identity, 0, 0);
         ctx->UpdateSubresource(cbTint, 0, nullptr, white, 0, 0);
         mountain.draw(ctx);
+        ed.drawCalls = 1;
 
         // draw scene boxes (Edit) or live PIE boxes (Play)
         for (size_t i = 0; i < boxesForPick->size(); ++i) {
@@ -749,6 +781,7 @@ int main(int argc, char** argv) {
             float col[4] = { sel ? 1.f : 0.72f, sel ? 0.85f : 0.55f, sel ? 0.3f : 0.34f, 1 };
             ctx->UpdateSubresource(cbTint, 0, nullptr, col, 0, 0);
             unitMesh.draw(ctx);
+            ++ed.drawCalls;
         }
 
         // ---- holds (orange cubes, bigger for checkpoints) ----
@@ -766,6 +799,7 @@ int main(int argc, char** argv) {
             ctx->UpdateSubresource(cbObj, 0, nullptr, hw, 0, 0);
             ctx->UpdateSubresource(cbTint, 0, nullptr, tint, 0, 0);
             unitMesh.draw(ctx);
+            ++ed.drawCalls;
         }
 
         // ---- climbers (in Play mode): local player + remote buddy ----
@@ -800,6 +834,36 @@ int main(int argc, char** argv) {
             if (ed.pie.buddyActive)
                 drawPlayerMarker(ctx, cbObj, cbTint, unitMesh,
                                  ed.pie.buddy.pelvisPos(), true, (float)simClock);
+        }
+
+        // ---- shared in-game HUD + F3 profiler (identical to the game) ----
+        // Drawn with depth OFF, after the 3D pass, before the ImGui panels.
+        if (ed.mode == EditorMode::Play && ed.pie.active()) {
+            if (ed.showHud) {
+                HudInputs hi;
+                hi.run = &ed.pie.run;
+                hi.player = &ed.pie.player;
+                hi.route = &ed.pie.route;
+                hi.phys = &ed.pie.phys;
+                hi.net = &ed.pie.net;
+                hi.isSolo = !ed.pie.net.connected();
+                hi.buddyActive = ed.pie.buddyActive;
+                hi.connected = ed.pie.net.connected();
+                hi.isHost = ed.pie.isHost;
+                hi.seed = ed.scene.seed;
+                drawGameplayHud(hud, hi, ed.cfg);
+            }
+            if (ed.showProfiler) {
+                HudInputs pi;
+                pi.phys = &ed.pie.phys;
+                pi.net = &ed.pie.net;
+                pi.fps = ed.fps;
+                pi.frameMs = ed.frameMs;
+                pi.drawCalls = ed.drawCalls;
+                pi.boxesSleep = ed.pie.phys.sleepingBoxCount();
+                pi.boxesTotal = (int)ed.pie.phys.boxes_.size();
+                drawProfilerOverlay(hud, pi, (float)ed.viewW, (float)ed.viewH);
+            }
         }
 
         ImGui::Render();
