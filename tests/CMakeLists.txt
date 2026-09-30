@@ -102,10 +102,15 @@ endforeach()
 
     # entity/format test
     bipbip_add_test(entity_test
-        engine/core/scene.cpp
-        LABELS "core")
-    set_target_properties(entity_test PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+        ${CMAKE_SOURCE_DIR}/engine/core/entity_test.cpp
+        ${CMAKE_SOURCE_DIR}/engine/core/scene.cpp
+    )
+
+    # engine/game config split test
+    bipbip_add_test(config_split_test
+        ${CMAKE_SOURCE_DIR}/engine/core/config_split_test.cpp
+        ${CMAKE_SOURCE_DIR}/engine/core/game_config.cpp
+    )
 
 # --- co-op smoke test ------------------------------------------------------
 # Spins up a real host + client (two processes — NetLayer has a static
