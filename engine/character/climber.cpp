@@ -1,4 +1,4 @@
-#include "game/player/climber.h"
+#include "character/climber.h"
 #include "world/heightfield.h"
 #include <cmath>
 #include <algorithm>

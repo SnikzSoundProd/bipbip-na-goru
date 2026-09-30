@@ -2,7 +2,7 @@
 // If this returns 0, the player/buddy render as nothing in the editor.
 #include "physics/verlet.h"
 #include "world/heightfield.h"
-#include "game/player/climber.h"
+#include "character/climber.h"
 #include <cstdio>
 #include <cmath>
 

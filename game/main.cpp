@@ -9,7 +9,7 @@
 #include "render/frustum.h"
 #include "world/heightfield.h"
 #include "physics/verlet.h"
-#include "game/player/climber.h"
+#include "character/climber.h"
 #include "game/world/route.h"
 #include "game/gameplay/run.h"
 #include "render/text_renderer.h"

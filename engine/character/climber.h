@@ -1,5 +1,10 @@
 #pragma once
-// bipbip player: verlet ragdoll climber.
+// bipbip engine: verlet ragdoll character rig.
+//
+// Lives in the ENGINE, not in a game: it has no climbing, route, stamina or
+// score knowledge, only verlet ragdoll control and box/terrain collision. Any
+// game on this engine can spawn one. The climbing game (bipbip) uses it as its
+// player; psycho uses it as its own character.
 // Pelvis is semi-kinematic (crisp control), limbs are pure ragdoll on constraints.
 #include "core/math.h"
 #include "physics/verlet.h"

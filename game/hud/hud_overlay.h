@@ -6,7 +6,7 @@
 #include "core/game_config.h"
 #include "game/gameplay/run.h"
 #include "game/world/route.h"
-#include "game/player/climber.h"
+#include "character/climber.h"
 #include "physics/verlet.h"
 #include "net/net_layer.h"
 #include <cstdint>

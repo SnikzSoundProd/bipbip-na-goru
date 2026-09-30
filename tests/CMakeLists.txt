@@ -117,6 +117,14 @@ endforeach()
         ${CMAKE_SOURCE_DIR}/engine/net/protocol_generic_test.cpp
     )
 
+    # engine-owned character rig (spawn, box collision, two characters)
+    bipbip_add_test(character_test
+        ${CMAKE_SOURCE_DIR}/engine/character/character_test.cpp
+        ${CMAKE_SOURCE_DIR}/engine/character/climber.cpp
+        ${CMAKE_SOURCE_DIR}/engine/physics/verlet.cpp
+        ${CMAKE_SOURCE_DIR}/engine/world/heightfield.cpp
+    )
+
 # --- co-op smoke test ------------------------------------------------------
 # Spins up a real host + client (two processes — NetLayer has a static
 # instance, so one process cannot do both) and verifies the handshake on both

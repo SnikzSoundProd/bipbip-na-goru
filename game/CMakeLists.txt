@@ -2,7 +2,6 @@
 # Both bipbip.exe (the game) and bipbip_editor.exe link this, so the editor
 # runs the REAL simulation instead of a reimplementation that can drift.
 add_library(bipbip_game STATIC
-    player/climber.cpp
     world/route.cpp
     gameplay/run.cpp
     ui/menu_state.cpp
