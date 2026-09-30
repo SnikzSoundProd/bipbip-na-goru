@@ -65,6 +65,27 @@ int main() {
     pie.stop();
     printf("restart ok\n"); fflush(stdout);
 
+    // Esc -> Play -> Esc cycles: the editor must survive repeated
+    // enter/exit without leaking state or crashing (this is the key the user
+    // presses constantly while tuning a level).
+    printf("play/stop cycles...\n"); fflush(stdout);
+    for (int cycle = 0; cycle < 5; ++cycle) {
+        CHECK(pie.start(sc, nullptr), "cycle start");
+        for (int i = 0; i < 30; ++i) pie.step(1.f/60.f, &in, 0.f);
+        pie.stop();
+        CHECK(!pie.active(), "cycle stop clears active");
+    }
+    printf("play/stop cycles ok\n"); fflush(stdout);
+
+    // After all cycles, starting once more still yields a clean, finite world.
+    CHECK(pie.start(sc, nullptr), "start after cycles");
+    for (int i = 0; i < 60; ++i) pie.step(1.f/60.f, &in, 0.f);
+    Vec3 pC = pie.player.pelvisPos();
+    CHECK(std::isfinite(pC.x) && std::isfinite(pC.y) && std::isfinite(pC.z),
+          "player finite after repeated cycles");
+    CHECK(pie.phys.boxes_.size() == 1, "box count stable across cycles");
+    pie.stop();
+
     if (failures == 0) { printf("PIE_TEST_PASS\n"); return 0; }
     printf("PIE_TEST_FAIL (%d)\n", failures);
     return 1;

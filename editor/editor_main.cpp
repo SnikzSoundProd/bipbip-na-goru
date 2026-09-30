@@ -24,6 +24,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <ctime>          // clock() / CLOCKS_PER_SEC for frame timing
 #include <string>
 #include <vector>
 #include <windows.h>
@@ -139,16 +140,36 @@ struct Editor {
         flyTo(dest, yaw, pitch);
     }
 
+    // ---- Play / Stop (PIE) ----
+    // Centralised so mouse capture, camera follow and the PIE world can never
+    // get out of sync with each other.
+    bool startPlay() {
+        if (!pie.start(scene, nullptr)) return false;
+        mode = EditorMode::Play;
+        camFollowPlayer = true;
+        cam.pitch = cfg.camera.pitch;   // set before the flight so the chase
+                                        // target uses the configured angle
+        focusPlayer();
+        snprintf(statusMsg, sizeof(statusMsg), "PLAYING (PIE) — Esc to stop");
+        return true;
+    }
+    void stopPlay() {
+        pie.stop();
+        mode = EditorMode::Edit;
+        camFollowPlayer = false;
+        snprintf(statusMsg, sizeof(statusMsg), "EDIT");
+    }
+
     // Frame the player exactly like the game's chase camera: BEHIND and above,
     // looking slightly down, so he sits in the centre of the frame. The generic
     // focusOn() keeps the current side angle, which pushed him below the view.
     void focusPlayer() {
         if (!pie.active()) return;
         Vec3 p = pie.player.pelvisPos();
-        const float pitch = 0.32f;                 // ~18deg down, same as the game
+        const float pitch = cfg.camera.pitch;      // ~18deg down, same as the game
         Vec3 back{ -sinf(cam.yaw) * cosf(pitch), sinf(pitch),
                     -cosf(cam.yaw) * cosf(pitch) };
-        Vec3 dest = p + back * 6.5f + Vec3{0, 1.6f, 0};
+        Vec3 dest = p + back * cfg.camera.distance + Vec3{0, cfg.camera.height, 0};
         // keep the camera out of the rock
         const HeightField& hfRef = (mode == EditorMode::Play) ? pie.hf : editHf;
         float ground = hfRef.heightAt(dest.x, dest.z) + 0.8f;
@@ -252,6 +273,7 @@ int main(int argc, char** argv) {
     Editor ed;
     ed.path = scenePath;
     ed.cfgPath = assetRoot + "assets/config/game.cfg";
+    ed.tPrev = (double)clock() / CLOCKS_PER_SEC;   // seed frame timer (first dt must not be huge)
     // Load the SAME config file the game uses. Missing file = write defaults.
     ed.cfg.reset();
     if (!ed.cfg.load(ed.cfgPath)) {
@@ -411,19 +433,13 @@ int main(int argc, char** argv) {
             bool playing = (ed.mode == EditorMode::Play);
             if (playing) {
                 if (ImGui::Button("| Stop")) {
-                    ed.pie.stop();
-                    ed.mode = EditorMode::Edit;
-                    ed.camFollowPlayer = false;
+                    ed.stopPlay();
+                    window.setRawMouseMode(false);
                 }
             } else {
                 if (ImGui::Button("> Play")) {
-                    ed.pie.start(ed.scene, gfx.device());
-                    ed.mode = EditorMode::Play;
-                    // fly in with the game's chase framing (behind + above)
-                    ed.cam.pitch = 0.32f;      // set before the flight so the
-                                               // chase target uses it too
-                    ed.camFollowPlayer = true;
-                    ed.focusPlayer();
+                    if (ed.startPlay()) window.setRawMouseMode(true);
+                    else snprintf(ed.statusMsg, sizeof(ed.statusMsg), "Play FAILED");
                 }
             }
             ImGui::SameLine();
@@ -700,6 +716,12 @@ int main(int argc, char** argv) {
             if (f2 && !prevF2) ed.showHud      = !ed.showHud;
             prevF3 = f3; prevF2 = f2;
         }
+        // Esc: leave Play and go back to Edit (Unreal's PIE stop behaviour).
+        // Also releases the captured mouse cursor.
+        if (input.down(VK_ESCAPE) && ed.mode == EditorMode::Play) {
+            ed.stopPlay();
+            window.setRawMouseMode(false);
+        }
         // F: focus the local player (same as the Viewport button)
         {
             static bool prevF = false;
@@ -721,6 +743,13 @@ int main(int argc, char** argv) {
             // afterwards the camera tracks the player directly
             if (ed.camFly.flying()) ed.camFly.retarget(want);
             else                    ed.cam.pos = want;
+            // In PIE the mouse is captured, so plain movement turns the camera
+            // exactly like in the game (no button held). Uses the configured
+            // sensitivity and pitch limits, same as main.cpp.
+            ed.cam.yaw += input.mouseDX * ed.cfg.camera.sensitivity;
+            ed.cam.pitch = std::max(ed.cfg.camera.pitchMin,
+                                    std::min(ed.cfg.camera.pitchMax,
+                                             ed.cam.pitch + input.mouseDY * ed.cfg.camera.sensitivity));
         } else if (input.mouseButtons[1]) {
             ed.cam.yaw   += input.mouseDX * 0.005f;
             ed.cam.pitch  = std::max(-1.3f, std::min(1.4f, ed.cam.pitch - input.mouseDY * 0.005f));
@@ -869,10 +898,27 @@ int main(int argc, char** argv) {
         ImGui::Render();
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         gfx.endFrame();
+
+        // ---- frame timing for the profiler (same scheme as the game) ----
+        // Without this the overlay showed FPS 0 / 0.00 ms because the values
+        // were declared but never computed.
+        {
+            double tEnd = (double)clock() / CLOCKS_PER_SEC;
+            double dtFrame = tEnd - ed.tPrev;
+            ed.tPrev = tEnd;
+            ed.frameMs = (float)(dtFrame * 1000.0);
+            ++ed.frameCount; ed.fpsAccum += dtFrame;
+            if (ed.fpsAccum >= 0.5) {
+                ed.fps = (float)(ed.frameCount / ed.fpsAccum);
+                ed.frameCount = 0; ed.fpsAccum = 0;
+            }
+        }
+
         input.endFrame();
     }
 
     if (ed.pie.active()) ed.pie.stop();
+    window.setRawMouseMode(false);   // never leave the cursor captured/hidden
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
