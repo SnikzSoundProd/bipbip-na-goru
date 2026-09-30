@@ -100,6 +100,13 @@ foreach(t game_config_test scene_test physics_sleep_test frustum_test
     bipbip_copy_runtime_dlls(${t})
 endforeach()
 
+    # entity/format test
+    bipbip_add_test(entity_test
+        engine/core/scene.cpp
+        LABELS "core")
+    set_target_properties(entity_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+
 # --- co-op smoke test ------------------------------------------------------
 # Spins up a real host + client (two processes — NetLayer has a static
 # instance, so one process cannot do both) and verifies the handshake on both
