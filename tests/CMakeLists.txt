@@ -112,6 +112,11 @@ endforeach()
         ${CMAKE_SOURCE_DIR}/engine/core/game_config.cpp
     )
 
+    # generic wire protocol test (header-only, no D3D, no GNS)
+    bipbip_add_test(proto_generic_test
+        ${CMAKE_SOURCE_DIR}/engine/net/protocol_generic_test.cpp
+    )
+
 # --- co-op smoke test ------------------------------------------------------
 # Spins up a real host + client (two processes — NetLayer has a static
 # instance, so one process cannot do both) and verifies the handshake on both
