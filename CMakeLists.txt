@@ -24,5 +24,9 @@ add_subdirectory(engine)
 add_subdirectory(game)
 add_subdirectory(editor)
 
+# psycho — the second game. Links the engine only, proving the engine is
+# reusable without depending on the first game.
+add_subdirectory(psycho)
+
 # Test suites (registered with CTest): cmake --build . && ctest
 add_subdirectory(tests)

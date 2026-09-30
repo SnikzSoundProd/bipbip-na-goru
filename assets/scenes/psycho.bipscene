@@ -1,0 +1,11 @@
+bipscene 2
+seed 1337
+world 220 256
+spawn 0 0 -6
+entity 1 box pos=4 1 2 rot=0 0 0 scale=1 1 1 owner=0 half=1 0.8 1 tag=stack visible=1
+entity 2 box pos=4 2.6 2 rot=0 12 0 scale=1 1 1 owner=0 half=1 0.8 1 tag=stack visible=1
+entity 3 box pos=4 4.2 2 rot=0 24 0 scale=1 1 1 owner=0 half=1 0.8 1 tag=stack visible=1
+entity 4 box pos=4 5.8 2 rot=0 36 0 scale=1 1 1 owner=0 half=1 0.8 1 tag=stack visible=1
+entity 5 box pos=4 7.4 2 rot=0 48 0 scale=1 1 1 owner=0 half=1 0.8 1 tag=stack visible=1
+entity 100 box pos=10 2 0 rot=0 0 0 scale=1 1 1 owner=0 half=0.5 2 6 tag=wall visible=1
+entity 200 lazer pos=-4 3 0 rot=0 0 0 scale=1 1 1 owner=0 color=1 0.15 0.15 damage=2 tag=hazard visible=1
