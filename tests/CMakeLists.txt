@@ -135,6 +135,14 @@ endforeach()
         ${CMAKE_SOURCE_DIR}/engine/character/move_basis_test.cpp
     )
 
+    # authored scene positions must resolve against the terrain
+    bipbip_add_test(scene_placement_test
+        ${CMAKE_SOURCE_DIR}/engine/core/scene_placement_test.cpp
+        ${CMAKE_SOURCE_DIR}/engine/core/scene.cpp
+        ${CMAKE_SOURCE_DIR}/engine/world/heightfield.cpp
+        ${CMAKE_SOURCE_DIR}/engine/physics/verlet.cpp
+    )
+
     # psycho: the second game proves the engine is reusable — scene round-trip
     # with a type game 1 has never heard of, its own gameplay config, and a
     # character driven from a scene. Links engine code only, no bipbip_game.

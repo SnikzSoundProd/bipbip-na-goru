@@ -26,6 +26,7 @@
 #include "character/climber.h"
 #include "character/move_basis.h"
 #include "core/scene.h"
+#include "core/scene_placement.h"
 #include "core/game_config.h"
 
 #include <cmath>
@@ -175,11 +176,24 @@ int main(int argc, char** argv) {
 
     VerletWorld phys;
     phys.init(&hf);
-    for (const auto& b : scene.boxes) {
-        // scene boxes are authored in world space; sit them on the terrain
-        phys.addBox(Vec3{b.pos[0], b.pos[1], b.pos[2]}, b.half[0], b.half[1], b.half[2]);
+    int placed = 0;
+    for (const auto& e : scene.entities) {
+        if (e.type != kTypeBox || !e.box) continue;
+        // Authored y is a height ABOVE the ground. Resolving it against the
+        // terrain is mandatory: the heightfield is a mountain whose ground near
+        // the origin is at y ~ 48, so feeding authored y in as an absolute world
+        // height buried all six boxes under the terrain. They were invisible
+        // and non-colliding, and the game still "looked" fine because the
+        // terrain is solid and the character never noticed.
+        const Vec3 w = authoredBoxToWorld(hf, e);
+        phys.addBox(w, e.box->half[0], e.box->half[1], e.box->half[2]);
+        if (placed < 3) {
+            fprintf(stderr, "[psycho] box %u authored y=%.2f -> world y=%.2f (ground %.2f)\n",
+                    e.id, e.pos[1], w.y, hf.heightAt(e.pos[0], e.pos[2]));
+        }
+        ++placed;
     }
-    fprintf(stderr, "[psycho] physics: %zu boxes\n", phys.boxes_.size());
+    fprintf(stderr, "[psycho] physics: %zu boxes placed\n", phys.boxes_.size());
 
     // ---- the character, straight from the engine ---------------------------
     Climber player;
